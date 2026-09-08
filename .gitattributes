@@ -1,0 +1,10 @@
+# Normalize source to LF in the repository and in the working tree. The CRLF
+# round-trip warnings are noise, but the real reason is Phase 2: this editor
+# detects and preserves line endings, and git must not quietly rewrite them.
+* text=auto eol=lf
+
+# Golden-file fixtures are the safety net for encoding and line-ending work.
+# Git must treat them as opaque bytes — a normalized CRLF fixture is a test
+# that silently stops testing anything.
+tests/fixtures/** -text
+crates/*/tests/fixtures/** -text
