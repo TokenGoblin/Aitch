@@ -1,0 +1,13 @@
+[package]
+name = "nib-core"
+description = "Editor core for nib. No GUI dependencies, ever."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# NON-NEGOTIABLE: no winit, no wgpu, no cosmic-text in this file. See CLAUDE.md.
+[dependencies]
+serde = { workspace = true }
+toml = { workspace = true }

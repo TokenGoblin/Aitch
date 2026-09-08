@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nib-core",
+    "crates/nib-ui",
+    "crates/nib-harness",
+    "crates/nib",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/TokenGoblin/nib"
+
+[workspace.dependencies]
+nib-core = { path = "crates/nib-core" }
+nib-ui = { path = "crates/nib-ui" }
+
+# See PLAN.md §2 for the stack table. No dependency is added without a line there.
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,510 @@
+## nib keymap — `nano` profile (the default)
+##
+## Faithful to GNU nano. ^X exits, ^O writes, ^W finds, ^K/^U cut and uncut,
+## M-U/M-E undo and redo. Where nano has no equivalent (the sidebar, quick
+## open, project search) the binding is invented but stays in nano's idiom.
+##
+## Chord grammar and the shift/layout rules: crates/nib-core/src/keymap.rs.
+## `label` puts a binding on the footer; `priority` decides what survives when
+## the footer reflows on a narrow window. Nothing here is hardcoded in the UI.
+##
+## Footer priorities read column-wise, the way nano's two rows do:
+##   ^G Help    ^O Write Out  ^W Where Is  ^K Cut    ^C Location  M-U Undo
+##   ^X Exit    ^R Read File  ^\ Replace   ^U Paste  ^_ Go To     M-E Redo
+
+profile = "nano"
+description = "GNU nano bindings, faithfully."
+
+# ---------------------------------------------------------------- editor ----
+
+[[binding]]
+context = "editor"
+chords = ["^G", "F1"]
+command = "help"
+label = "Help"
+priority = 200
+
+[[binding]]
+context = "editor"
+chords = ["^X"]
+command = "quit"
+label = "Exit"
+priority = 199
+
+[[binding]]
+context = "editor"
+chords = ["^O"]
+command = "write-out"
+label = "Write Out"
+priority = 198
+
+[[binding]]
+context = "editor"
+chords = ["^R"]
+command = "read-file"
+label = "Read File"
+priority = 197
+
+[[binding]]
+context = "editor"
+chords = ["^W"]
+command = "where-is"
+label = "Where Is"
+priority = 196
+
+[[binding]]
+context = "editor"
+chords = ['^\']
+command = "replace"
+label = "Replace"
+priority = 195
+
+[[binding]]
+context = "editor"
+chords = ["^K"]
+command = "cut"
+label = "Cut"
+priority = 194
+
+[[binding]]
+context = "editor"
+chords = ["^U"]
+command = "uncut"
+label = "Paste"
+priority = 193
+
+[[binding]]
+context = "editor"
+chords = ["^C"]
+command = "cursor-position"
+label = "Location"
+priority = 192
+
+[[binding]]
+context = "editor"
+chords = ["^_", "M-G"]
+command = "goto-line"
+label = "Go To"
+priority = 191
+
+[[binding]]
+context = "editor"
+chords = ["M-U"]
+command = "undo"
+label = "Undo"
+priority = 190
+
+[[binding]]
+context = "editor"
+chords = ["M-E"]
+command = "redo"
+label = "Redo"
+priority = 189
+
+[[binding]]
+context = "editor"
+chords = ["M-A", "^6"]
+command = "set-mark"
+label = "Set Mark"
+priority = 188
+
+[[binding]]
+context = "editor"
+chords = ["M-6", "Ctrl+Shift+C"]
+command = "copy"
+label = "Copy"
+priority = 187
+
+[[binding]]
+context = "editor"
+chords = ["^T"]
+command = "quick-open"
+label = "Open"
+priority = 186
+
+[[binding]]
+context = "editor"
+chords = ["M-T"]
+command = "toggle-tree"
+label = "Tree"
+priority = 185
+
+[[binding]]
+context = "editor"
+chords = ["M-B"]
+command = "buffer-list"
+label = "Buffers"
+priority = 184
+
+# nano's M-W is "repeat the last search", and that wins over the plan's
+# suggestion of M-W for project search. Project search takes Ctrl+Alt+W.
+[[binding]]
+context = "editor"
+chords = ["M-^W"]
+command = "project-search"
+label = "Search All"
+priority = 183
+
+# --- editor, unlabelled: reachable but never on the footer -------------------
+
+[[binding]]
+context = "editor"
+chords = ["Left", "^B"]
+command = "move-left"
+
+[[binding]]
+context = "editor"
+chords = ["Right", "^F"]
+command = "move-right"
+
+[[binding]]
+context = "editor"
+chords = ["Up", "^P"]
+command = "move-up"
+
+[[binding]]
+context = "editor"
+chords = ["Down", "^N"]
+command = "move-down"
+
+[[binding]]
+context = "editor"
+chords = ["Ctrl+Left", "M-Space"]
+command = "move-word-left"
+
+[[binding]]
+context = "editor"
+chords = ["Ctrl+Right", "^Space"]
+command = "move-word-right"
+
+[[binding]]
+context = "editor"
+chords = ["Home", "^A"]
+command = "move-line-start"
+
+[[binding]]
+context = "editor"
+chords = ["End", "^E"]
+command = "move-line-end"
+
+[[binding]]
+context = "editor"
+chords = ["PgUp", "^Y"]
+command = "move-page-up"
+
+[[binding]]
+context = "editor"
+chords = ["PgDn", "^V"]
+command = "move-page-down"
+
+[[binding]]
+context = "editor"
+chords = ["Ctrl+Home", 'M-\']
+command = "move-buffer-start"
+
+[[binding]]
+context = "editor"
+chords = ["Ctrl+End", "M-/"]
+command = "move-buffer-end"
+
+[[binding]]
+context = "editor"
+chords = ["Ctrl+Shift+A"]
+command = "select-all"
+
+[[binding]]
+context = "editor"
+chords = ["Enter"]
+command = "insert-newline"
+
+[[binding]]
+context = "editor"
+chords = ["Tab"]
+command = "insert-tab"
+
+[[binding]]
+context = "editor"
+chords = ["Backspace", "^H"]
+command = "delete-backward"
+
+[[binding]]
+context = "editor"
+chords = ["Delete", "^D"]
+command = "delete-forward"
+
+[[binding]]
+context = "editor"
+chords = ["Ctrl+Backspace"]
+command = "delete-word-backward"
+
+[[binding]]
+context = "editor"
+chords = ["Ctrl+Delete"]
+command = "delete-word-forward"
+
+# The system clipboard, alongside nano's own cut buffer on ^K/^U.
+[[binding]]
+context = "editor"
+chords = ["Ctrl+Shift+V"]
+command = "paste"
+
+[[binding]]
+context = "editor"
+chords = ["M-W", "F3"]
+command = "where-is-next"
+
+[[binding]]
+context = "editor"
+chords = ["M-Q", "Shift+F3"]
+command = "where-is-prev"
+
+[[binding]]
+context = "editor"
+chords = ["^L"]
+command = "refresh"
+
+[[binding]]
+context = "editor"
+chords = ["M-."]
+command = "next-buffer"
+
+[[binding]]
+context = "editor"
+chords = ["M-,"]
+command = "prev-buffer"
+
+[[binding]]
+context = "editor"
+chords = ["Ctrl+Shift+W"]
+command = "close-buffer"
+
+# The one-time first-run hint on the footer points here.
+[[binding]]
+context = "editor"
+chords = ["M-M"]
+command = "switch-profile"
+arg = "modern"
+
+# ---------------------------------------------------------------- prompt ----
+
+[[binding]]
+context = "prompt"
+chords = ["Enter"]
+command = "prompt-accept"
+label = "Confirm"
+priority = 100
+
+[[binding]]
+context = "prompt"
+chords = ["^C", "Escape"]
+command = "prompt-cancel"
+label = "Cancel"
+priority = 99
+
+[[binding]]
+context = "prompt"
+chords = ["Up", "^P"]
+command = "prompt-history-prev"
+label = "Prev"
+priority = 98
+
+[[binding]]
+context = "prompt"
+chords = ["Down", "^N"]
+command = "prompt-history-next"
+label = "Next"
+priority = 97
+
+[[binding]]
+context = "prompt"
+chords = ["^G", "F1"]
+command = "help"
+label = "Help"
+priority = 96
+
+[[binding]]
+context = "prompt"
+chords = ["Left", "^B"]
+command = "move-left"
+
+[[binding]]
+context = "prompt"
+chords = ["Right", "^F"]
+command = "move-right"
+
+[[binding]]
+context = "prompt"
+chords = ["Home", "^A"]
+command = "move-line-start"
+
+[[binding]]
+context = "prompt"
+chords = ["End", "^E"]
+command = "move-line-end"
+
+[[binding]]
+context = "prompt"
+chords = ["Backspace", "^H"]
+command = "delete-backward"
+
+[[binding]]
+context = "prompt"
+chords = ["Delete", "^D"]
+command = "delete-forward"
+
+# ------------------------------------------------------------------ tree ----
+
+[[binding]]
+context = "tree"
+chords = ["Enter"]
+command = "prompt-accept"
+label = "Open"
+priority = 100
+
+[[binding]]
+context = "tree"
+chords = ["M-T", "Escape"]
+command = "toggle-tree"
+label = "Close Tree"
+priority = 99
+
+[[binding]]
+context = "tree"
+chords = ["^T"]
+command = "quick-open"
+label = "Find File"
+priority = 98
+
+[[binding]]
+context = "tree"
+chords = ["^L"]
+command = "refresh"
+label = "Refresh"
+priority = 97
+
+[[binding]]
+context = "tree"
+chords = ["^G", "F1"]
+command = "help"
+label = "Help"
+priority = 96
+
+[[binding]]
+context = "tree"
+chords = ["Up", "^P"]
+command = "move-up"
+
+[[binding]]
+context = "tree"
+chords = ["Down", "^N"]
+command = "move-down"
+
+[[binding]]
+context = "tree"
+chords = ["PgUp", "^Y"]
+command = "move-page-up"
+
+[[binding]]
+context = "tree"
+chords = ["PgDn", "^V"]
+command = "move-page-down"
+
+[[binding]]
+context = "tree"
+chords = ["Home"]
+command = "move-buffer-start"
+
+[[binding]]
+context = "tree"
+chords = ["End"]
+command = "move-buffer-end"
+
+# ---------------------------------------------------------------- search ----
+
+[[binding]]
+context = "search"
+chords = ["Enter"]
+command = "prompt-accept"
+label = "Go"
+priority = 100
+
+[[binding]]
+context = "search"
+chords = ["^C", "Escape"]
+command = "prompt-cancel"
+label = "Cancel"
+priority = 99
+
+[[binding]]
+context = "search"
+chords = ["M-W", "Down", "F3"]
+command = "where-is-next"
+label = "Next"
+priority = 98
+
+[[binding]]
+context = "search"
+chords = ["M-Q", "Up", "Shift+F3"]
+command = "where-is-prev"
+label = "Prev"
+priority = 97
+
+[[binding]]
+context = "search"
+chords = ['^\']
+command = "replace"
+label = "Replace"
+priority = 96
+
+[[binding]]
+context = "search"
+chords = ["^G", "F1"]
+command = "help"
+label = "Help"
+priority = 95
+
+# ------------------------------------------------------------------ help ----
+
+[[binding]]
+context = "help"
+chords = ["^X", "Escape"]
+command = "prompt-cancel"
+label = "Exit Help"
+priority = 100
+
+[[binding]]
+context = "help"
+chords = ["^W"]
+command = "where-is"
+label = "Where Is"
+priority = 99
+
+[[binding]]
+context = "help"
+chords = ["Up", "^P"]
+command = "move-up"
+
+[[binding]]
+context = "help"
+chords = ["Down", "^N"]
+command = "move-down"
+
+[[binding]]
+context = "help"
+chords = ["PgUp", "^Y"]
+command = "move-page-up"
+
+[[binding]]
+context = "help"
+chords = ["PgDn", "^V"]
+command = "move-page-down"
+
+[[binding]]
+context = "help"
+chords = ["Home", 'M-\']
+command = "move-buffer-start"
+
+[[binding]]
+context = "help"
+chords = ["End", "M-/"]
+command = "move-buffer-end"

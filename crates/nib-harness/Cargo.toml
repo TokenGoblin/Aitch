@@ -1,0 +1,12 @@
+[package]
+name = "nib-harness"
+description = "Headless driver for nib: feed chords, assert on state."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Deliberately no GUI dependency: the point of this crate is that CI can run it.
+[dependencies]
+nib-core = { workspace = true }
