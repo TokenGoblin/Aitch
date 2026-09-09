@@ -33,6 +33,19 @@ with a console beside it.
   executable and checks the command line still answers, because both of these
   have been wrong in a shipped release and neither shows up in a unit test.
 
+- **A restored session stopped the folder being watched.** Only a folder that
+  was opened is watched, and restoring a session set the root as though it had
+  merely been inferred — so `aitch .` watched the tree on its first run and
+  never again, and the sidebar quietly needed `^L` from then on. A session
+  records which it was now, defaulted so an older one still loads. This was
+  damage from the fix immediately below, caught before it shipped.
+
+- **Saying yes to "save before quitting" could drop the rest of the quit.**
+  Saving can ask a second question — a name for an unnamed buffer, or
+  permission to overwrite a file that changed on disk — and those answers land
+  nowhere near the quit. The file was written, the editor stayed open, and the
+  buffers behind it were never asked about, with nothing to say so.
+
 - **Opening a file watched the folder it was in, recursively.** `aitch
   notes.txt` sets a root so the tree and quick open have somewhere to look,
   and the watcher took that as a folder to watch — so opening a file in a home
@@ -67,6 +80,15 @@ with a console beside it.
   when the renderer is built, so a live change moved the gutter and the Tab
   key while the tabs already on screen kept the old width, and a tab-indented
   file quietly stopped lining up.
+
+- **Smaller things a review of the day's work turned up.** The "atlas full"
+  message carried twenty-six literal spaces, enough to push half of it off an
+  eighty-column status line. The packaging script's icon check read bitmap
+  dimensions after disposing them, so a genuine mismatch would have reported
+  "Parameter is not valid" rather than the diagnostic it exists to produce.
+  Icon edge pixels were averaged as premultiplied alpha and written as
+  straight, putting a dark fringe around the rounded corners. And the notice
+  pointing at the startup log printed on every run once the file existed.
 
 - **Bracket matching never fired at the very start of a file.** The candidates
   were built as an array, `[cursor, cursor - 1]`, which evaluates both before
