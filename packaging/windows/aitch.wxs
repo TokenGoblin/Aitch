@@ -26,6 +26,15 @@
            InstallerVersion="500"
            UpgradeCode="8f3c1b2a-6d54-4f19-9c8e-2a7b41d05e63">
 
+    <!-- Scope="perUser" on its own leaves ALLUSERS unset, which is the
+         pre-Installer-5 way of saying per-user. Windows then registers the
+         product without a DisplayName, and Add/Remove Programs lists by
+         DisplayName — so it installed, ran, and could not be uninstalled from
+         Settings. This pair is the modern spelling: ALLUSERS=2 means "decide
+         from MSIINSTALLPERUSER", and MSIINSTALLPERUSER=1 chooses per-user. -->
+    <Property Id="ALLUSERS" Value="2" />
+    <Property Id="MSIINSTALLPERUSER" Value="1" />
+
     <!-- Installing 0.2 over 0.1 replaces it rather than sitting beside it. -->
     <MajorUpgrade DowngradeErrorMessage="A newer version of $(ProductName) is already installed. Uninstall it first if you meant to go back." />
 

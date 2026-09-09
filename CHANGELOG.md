@@ -2,9 +2,22 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.1.0] — 2026-09-09
+
+The first release. Everything below, from Phase 0 through Phase 8: the editor,
+a Windows installer and a portable zip.
 
 ### Packaging
+
+- **The installed program did not appear in Add/Remove Programs.** It
+  installed, ran, put itself on the PATH and left a working Start menu
+  shortcut — and registered itself without a `DisplayName`, which is the one
+  value Add/Remove Programs lists by. There was no way to uninstall it except
+  `msiexec /x` with a GUID nobody has. `Scope="perUser"` on its own leaves
+  `ALLUSERS` unset, which is the pre-Installer-5 spelling of per-user;
+  `ALLUSERS=2` with `MSIINSTALLPERUSER=1` is the modern one and registers
+  properly. Found by installing the thing, which nothing had ever done: CI
+  checked the MSI was a valid MSI, not that it worked.
 
 - **An icon**, on the Start menu shortcut and in Add/Remove Programs, both of
   which were blank. Generated from `Theme::dark` by
@@ -39,6 +52,48 @@ All notable changes to this project are documented here.
 - Both artifacts now land in `target/dist` rather than `target/wix`, which was
   a confusing home for a zip that WiX has nothing to do with.
 
+- **A Windows installer.** Per-user, into `%LOCALAPPDATA%\Programs\Aitch`,
+  so there is no administrator prompt; puts `aitch` on the PATH so
+  `EDITOR=aitch` works; ships the guide beside the binary. Built by
+  `packaging/windows/build.ps1`, or by the release workflow on a tag.
+- Released binaries are built with `--remap-path-prefix`, and the packaging
+  script **refuses to package a binary that still carries the build
+  machine's home directory**. Rust writes the absolute path of every source
+  file into panic messages and debug info; before this the binary named the
+  builder's home directory 639 times.
+
+### Documentation
+
+- **Screenshots in the README**, which PLAN.md Phase 8 calls the whole pitch:
+  the editor showing Rust with the two-row nano footer under it, and the same
+  file with `M-T`'s folder tree open and the footer switched to the tree's own
+  keys. The second one makes the argument better than the paragraph next to it
+  does — nothing was written twice for the footer to follow the focus.
+- The images are **rendered by the editor, headlessly, one command each**,
+  rather than captured by hand: `dump_frame` now writes a PNG when the output
+  is named `.png`, and raw RGBA otherwise. A screenshot taken by hand goes
+  stale the moment a colour or a footer entry changes and nobody notices.
+  [`docs/screenshots.md`](docs/screenshots.md) has the commands and why those
+  frames.
+- `crates/aitch-harness/tests/documentation.rs` now checks that every image
+  the README shows is actually in the repository, so a moved file is a failed
+  test rather than a broken box on the front page.
+- `png` is a dev-dependency of `aitch-ui` only. It is not new to the build:
+  `arboard` already compiles the same version of it through `image`, so
+  nothing extra is built and nothing extra ships.
+
+- [`docs/guide.md`](docs/guide.md), a guide for people who want to use the
+  editor rather than read about its design: the screen, the keys, projects,
+  searching, recovery and configuration.
+- `crates/aitch-harness/tests/documentation.rs` checks the guide against the
+  keymap — every chord it names parses and is bound to something — and
+  against the list of languages that are actually highlighted. It caught the
+  guide claiming `^A` selects all (it goes to the start of the line), `^V`
+  pastes (it is a page down), `M-W` finds backwards (it finds forwards), and
+  Go, Java and Ruby highlighting, none of which exists.
+- A README section listing what the editor does *not* do yet, rather than
+  leaving it to be discovered.
+
 ### Fixed
 
 - **Clicking landed in the wrong place whenever anything was to the left of
@@ -64,59 +119,6 @@ All notable changes to this project are documented here.
   the walker happened to return `src/lib.rs` before `src/main.rs`, which on
   this machine is about one run in ten. It showed up as a flaky test; it was
   a broken feature.
-
-### Documentation
-
-- **Screenshots in the README**, which PLAN.md Phase 8 calls the whole pitch:
-  the editor showing Rust with the two-row nano footer under it, and the same
-  file with `M-T`'s folder tree open and the footer switched to the tree's own
-  keys. The second one makes the argument better than the paragraph next to it
-  does — nothing was written twice for the footer to follow the focus.
-- The images are **rendered by the editor, headlessly, one command each**,
-  rather than captured by hand: `dump_frame` now writes a PNG when the output
-  is named `.png`, and raw RGBA otherwise. A screenshot taken by hand goes
-  stale the moment a colour or a footer entry changes and nobody notices.
-  [`docs/screenshots.md`](docs/screenshots.md) has the commands and why those
-  frames.
-- `crates/aitch-harness/tests/documentation.rs` now checks that every image
-  the README shows is actually in the repository, so a moved file is a failed
-  test rather than a broken box on the front page.
-- `png` is a dev-dependency of `aitch-ui` only. It is not new to the build:
-  `arboard` already compiles the same version of it through `image`, so
-  nothing extra is built and nothing extra ships.
-
-## [0.1.0] — 2026-09-08
-
-The first release. Everything below, from Phase 0 through Phase 7, plus a
-Windows installer.
-
-### Packaging
-
-- **A Windows installer.** Per-user, into `%LOCALAPPDATA%\Programs\Aitch`,
-  so there is no administrator prompt; puts `aitch` on the PATH so
-  `EDITOR=aitch` works; ships the guide beside the binary. Built by
-  `packaging/windows/build.ps1`, or by the release workflow on a tag.
-- Released binaries are built with `--remap-path-prefix`, and the packaging
-  script **refuses to package a binary that still carries the build
-  machine's home directory**. Rust writes the absolute path of every source
-  file into panic messages and debug info; before this the binary named the
-  builder's home directory 639 times.
-
-### Documentation
-
-- [`docs/guide.md`](docs/guide.md), a guide for people who want to use the
-  editor rather than read about its design: the screen, the keys, projects,
-  searching, recovery and configuration.
-- `crates/aitch-harness/tests/documentation.rs` checks the guide against the
-  keymap — every chord it names parses and is bound to something — and
-  against the list of languages that are actually highlighted. It caught the
-  guide claiming `^A` selects all (it goes to the start of the line), `^V`
-  pastes (it is a page down), `M-W` finds backwards (it finds forwards), and
-  Go, Java and Ruby highlighting, none of which exists.
-- A README section listing what the editor does *not* do yet, rather than
-  leaving it to be discovered.
-
-### Fixed
 
 - **Typing a comment sometimes left it uncoloured.** The syntax worker drops
   superseded requests rather than queuing them, which is right, but it was
