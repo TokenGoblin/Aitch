@@ -19,8 +19,23 @@ a Windows installer and a portable zip.
   properly. Found by installing the thing, which nothing had ever done: CI
   checked the MSI was a valid MSI, not that it worked.
 
-- **An icon**, on the Start menu shortcut and in Add/Remove Programs, both of
-  which were blank. Generated from `Theme::dark` by
+- **The icon is on the executable and the window too**, so Explorer, the Start
+  menu, Alt-Tab and the taskbar all show it rather than a generic box. The
+  binary gets it as a resource, embedded by `crates/aitch/build.rs` through
+  `winresource` — a build-only dependency on Windows, with nothing linked and
+  nothing at runtime. The window gets it as raw pixels included at compile
+  time, so there is no image decoder in the editor. The build script only
+  warns if it cannot embed one, because refusing to build the editor over a
+  cosmetic resource would be the worse trade; `build.ps1` compares the icon in
+  the binary against the icon file and refuses to package a mismatch, which is
+  where it actually matters.
+
+  The Add/Remove Programs row still has no icon: Windows leaves `DisplayIcon`
+  empty on a per-user install whatever `ARPPRODUCTICON` says, and both ways to
+  force it are worse than the blank square — one wants administrator rights,
+  the other adds a second half-filled entry beside the real one.
+
+- **An icon**, on the Start menu shortcut, which was blank. Generated from `Theme::dark` by
   `cargo run -p aitch-ui --release --example make_icon`, so it cannot drift
   away from the editor it stands for: the tile is what the footer sits on, the
   H is the cursor's blue, the two bars under it are a key cap's. No font is

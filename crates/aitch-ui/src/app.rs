@@ -25,7 +25,7 @@ use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::ModifiersState;
-use winit::window::{Window, WindowId};
+use winit::window::{Icon, Window, WindowId};
 
 use crate::input::chord_from_event;
 use crate::render::Surface;
@@ -474,6 +474,7 @@ impl ApplicationHandler<Wake> for App {
 
         let attributes = Window::default_attributes()
             .with_title(self.title())
+            .with_window_icon(window_icon())
             .with_inner_size(LogicalSize::new(960.0, 640.0));
 
         let window = match event_loop.create_window(attributes) {
@@ -650,4 +651,25 @@ impl ApplicationHandler<Wake> for App {
             _ => {}
         }
     }
+}
+
+/// The window and taskbar icon, drawn by the `make_icon` example.
+///
+/// Stored as raw RGBA with a width and height in front of it, in the shape
+/// `dump_frame` writes, so the editor hands winit the pixels directly: no
+/// decoder in the binary and no image crate in its dependency tree. The
+/// executable's own icon is a separate thing, embedded as a resource by
+/// `crates/aitch/build.rs`.
+fn window_icon() -> Option<Icon> {
+    const RAW: &[u8] = include_bytes!("../assets/icon.rgba");
+
+    let width = u32::from_le_bytes(RAW.get(0..4)?.try_into().ok()?);
+    let height = u32::from_le_bytes(RAW.get(4..8)?.try_into().ok()?);
+    let pixels = RAW.get(8..)?;
+    if pixels.len() != (width as usize) * (height as usize) * 4 {
+        return None;
+    }
+    // A window with no icon is better than no window: every failure here ends
+    // up as None and winit falls back to the platform default.
+    Icon::from_rgba(pixels.to_vec(), width, height).ok()
 }

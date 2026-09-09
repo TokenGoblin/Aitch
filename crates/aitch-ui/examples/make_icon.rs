@@ -1,4 +1,4 @@
-//! Draw the application icon and write it as a Windows `.ico`.
+//! Draw the application icon, for Windows and for the window itself.
 //!
 //! Generated rather than drawn by hand, for the same reason the README
 //! screenshots are (`docs/screenshots.md`): it takes its colours from
@@ -7,18 +7,19 @@
 //! nobody has installed.
 //!
 //! ```text
-//! cargo run -p aitch-ui --release --example make_icon -- packaging/windows/aitch.ico
+//! cargo run -p aitch-ui --release --example make_icon -- \
+//!     packaging/windows/aitch.ico crates/aitch-ui/assets/icon.rgba
 //! ```
 //!
-//! Pass a second path to also write a 256px PNG, for anywhere that wants one.
+//! One or more outputs, each written in the format its extension names: `.ico`
+//! for Windows, `.png` for a 256px picture, `.rgba` for the raw block the
+//! editor includes at compile time and hands to winit as its window icon.
 //!
 //! The shapes are rectangles and one rounded corner radius, so there is no
 //! font to find and no glyph to shape: an `H` over the two footer rows, which
 //! is the one thing about this editor you can see from across a room. Every
 //! size is rendered at 4× and boxed down, which is where the smooth edges come
 //! from.
-
-use std::io::Write;
 
 use aitch_ui::theme::{Color, Theme};
 
@@ -61,13 +62,20 @@ const FOOTER_BOTTOM: Rect = Rect::new(0.22, 0.815, 0.63, 0.89);
 /// Corner radius of the tile, as a fraction of its side.
 const RADIUS: f32 = 0.22;
 
+/// Size written for a `.png`, for anywhere that wants one picture.
+const PREVIEW: u32 = 256;
+
+/// Size written for a `.rgba`. The window icon is scaled by the compositor
+/// from whatever it is given, and 64 is enough for a taskbar button without
+/// putting a large blob in the binary.
+const WINDOW: u32 = 64;
+
 fn main() {
-    let mut args = std::env::args().skip(1);
-    let Some(ico_path) = args.next() else {
-        eprintln!("usage: make_icon <output.ico> [preview.png]");
+    let outputs: Vec<String> = std::env::args().skip(1).collect();
+    if outputs.is_empty() {
+        eprintln!("usage: make_icon <output.ico|output.png|output.rgba>...");
         std::process::exit(2);
-    };
-    let png_path = args.next();
+    }
 
     let theme = Theme::dark();
     // The tile is the colour the footer and status line sit on, so the icon is
@@ -77,31 +85,51 @@ fn main() {
     let letter = to_srgb(theme.cursor);
     let rows = to_srgb(theme.key_background);
 
-    let mut entries = Vec::new();
-    for size in SIZES {
-        let pixels = render(size, tile, letter, rows);
+    for out in &outputs {
+        let extension = std::path::Path::new(out)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
 
-        if size == 256 {
-            if let Some(path) = &png_path {
-                std::fs::write(path, encode_png(size, &pixels)).expect("could not write the PNG");
-                eprintln!("wrote {path}");
+        let bytes = match extension.as_str() {
+            "ico" => {
+                let entries: Vec<(u32, Vec<u8>)> = SIZES
+                    .iter()
+                    .map(|&size| {
+                        let pixels = render(size, tile, letter, rows);
+                        let image = if size < DIB_BELOW {
+                            encode_dib(size, &pixels)
+                        } else {
+                            encode_png(size, &pixels)
+                        };
+                        (size, image)
+                    })
+                    .collect();
+                encode_ico(&entries)
             }
-        }
-
-        let image = if size < DIB_BELOW {
-            encode_dib(size, &pixels)
-        } else {
-            encode_png(size, &pixels)
+            "png" => encode_png(PREVIEW, &render(PREVIEW, tile, letter, rows)),
+            // The same shape dump_frame writes for a `.raw`: width, height,
+            // then the pixels. The binary includes this with `include_bytes!`
+            // and hands it to winit, so there is no decoder in the editor and
+            // no image crate in its dependency tree.
+            "rgba" => {
+                let pixels = render(WINDOW, tile, letter, rows);
+                let mut raw = Vec::with_capacity(8 + pixels.len());
+                raw.extend_from_slice(&WINDOW.to_le_bytes());
+                raw.extend_from_slice(&WINDOW.to_le_bytes());
+                raw.extend_from_slice(&pixels);
+                raw
+            }
+            _ => {
+                eprintln!("{out}: expected .ico, .png or .rgba");
+                std::process::exit(2);
+            }
         };
-        entries.push((size, image));
-    }
 
-    std::fs::write(&ico_path, encode_ico(&entries)).expect("could not write the icon");
-    let bytes: usize = entries.iter().map(|(_, image)| image.len()).sum();
-    eprintln!(
-        "wrote {ico_path} ({} sizes, {bytes} bytes of image data)",
-        entries.len()
-    );
+        std::fs::write(out, &bytes).unwrap_or_else(|e| panic!("could not write {out}: {e}"));
+        eprintln!("wrote {out} ({} bytes)", bytes.len());
+    }
 }
 
 /// One icon at `size`, as tightly packed RGBA.
@@ -268,6 +296,5 @@ fn encode_ico(entries: &[(u32, Vec<u8>)]) -> Vec<u8> {
         out.extend_from_slice(png);
     }
 
-    let _ = out.flush();
     out
 }

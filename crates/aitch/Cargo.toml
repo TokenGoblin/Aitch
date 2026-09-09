@@ -11,3 +11,10 @@ default-run = "aitch"
 [dependencies]
 aitch-core = { workspace = true }
 aitch-ui = { workspace = true }
+
+# Windows only, and only at build time: it writes a .rc naming the icon and
+# runs the SDK's resource compiler over it, so Explorer, Alt-Tab and the
+# shortcut have something to show. Nothing links against it and nothing of it
+# ends up in the binary but the icon itself.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

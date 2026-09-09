@@ -108,6 +108,32 @@ if ($leaks) {
 }
 Write-Host 'Binary carries no build-machine paths'
 
+# crates/aitch/build.rs embeds the icon, and deliberately only warns if it
+# cannot -- refusing to build the editor over a cosmetic resource would be a
+# worse trade, and cargo hides build-script warnings on a cached build. So the
+# check that it worked belongs here, where something is actually being
+# shipped. Comparing against the icon file rather than against known colours
+# keeps this true when the drawing changes.
+Add-Type -AssemblyName System.Drawing
+$fromExe = [System.Drawing.Icon]::ExtractAssociatedIcon($binary)
+$expected = New-Object System.Drawing.Icon((Join-Path $PSScriptRoot 'aitch.ico'), $fromExe.Width, $fromExe.Height)
+$a = $fromExe.ToBitmap()
+$b = $expected.ToBitmap()
+$differences = 0
+for ($y = 0; $y -lt $a.Height; $y++) {
+    for ($x = 0; $x -lt $a.Width; $x++) {
+        if ($a.GetPixel($x, $y).ToArgb() -ne $b.GetPixel($x, $y).ToArgb()) { $differences++ }
+    }
+}
+$a.Dispose(); $b.Dispose(); $fromExe.Dispose(); $expected.Dispose()
+if ($differences -ne 0) {
+    throw ("The release binary is not carrying the application icon " +
+           "($differences of $($a.Width * $a.Height) pixels differ). The build " +
+           "script only warns when it cannot embed one; check the build output " +
+           "for 'could not embed the icon'.")
+}
+Write-Host 'Binary carries the application icon'
+
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
 # The installer UI shows the licence, and insists on RTF. This is the

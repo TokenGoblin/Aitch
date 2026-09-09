@@ -44,11 +44,18 @@
                         Manufacturer="$(Manufacturer)" />
 
     <!-- Generated from the editor's own dark theme by the make_icon example;
-         see crates/aitch-ui/examples/make_icon.rs for the command. Note that
-         ARPPRODUCTICON is what Add/Remove Programs shows beside the entry,
-         and without it that row is blank. -->
-    <Icon Id="AitchIcon" SourceFile="$(IconPath)" />
-    <Property Id="ARPPRODUCTICON" Value="AitchIcon" />
+         see crates/aitch-ui/examples/make_icon.rs for the command. The same
+         drawing is embedded in aitch.exe by crates/aitch/build.rs, which is
+         where Explorer and Alt-Tab read it from.
+
+         This gives the Start menu shortcut its icon. It does not fill in the
+         Add/Remove Programs row's DisplayIcon: on a per-user install Windows
+         leaves that empty whatever ARPPRODUCTICON says, and the two ways to
+         force it are worse than the blank square it leaves — writing HKLM
+         directly would want administrator rights, and writing the per-user
+         hive would add a second, half-filled entry beside the real one. -->
+    <Icon Id="AitchIcon.ico" SourceFile="$(IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="AitchIcon.ico" />
 
     <!-- %LOCALAPPDATA%\Programs\Aitch -->
     <StandardDirectory Id="LocalAppDataFolder">
@@ -95,7 +102,7 @@
                   Description="A text editor with nano's interaction model"
                   Target="[INSTALLFOLDER]aitch.exe"
                   WorkingDirectory="INSTALLFOLDER"
-                  Icon="AitchIcon" />
+                  Icon="AitchIcon.ico" />
         <RemoveFolder Id="RemoveShortcutFolder" Directory="ShortcutFolder" On="uninstall" />
         <RegistryValue Root="HKCU"
                        Key="Software\$(Manufacturer)\$(ProductName)"

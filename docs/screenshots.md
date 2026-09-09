@@ -59,8 +59,18 @@ kind of command:
 
 ```
 cargo run -p aitch-ui --release --example make_icon -- \
-    packaging/windows/aitch.ico [preview.png]
+    packaging/windows/aitch.ico crates/aitch-ui/assets/icon.rgba
 ```
+
+Each output is written in the format its extension names: `.ico` for Windows,
+`.png` for one 256px picture, `.rgba` for a raw block with its width and
+height in front of it. The `.ico` is embedded in `aitch.exe` by
+`crates/aitch/build.rs`, which is where Explorer, the Start menu and Alt-Tab
+read it from. The `.rgba` is included at compile time and handed straight to
+winit as the window icon, which is what the taskbar shows while the editor is
+running — raw pixels rather than a PNG so that there is no decoder in the
+binary and no image crate in its dependency tree. Regenerate both together or
+they will disagree.
 
 It takes its three colours from `Theme::dark` — the tile is what the footer
 sits on, the H is the cursor's blue, the two bars are a key cap's — so it
