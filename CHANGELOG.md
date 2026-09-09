@@ -2,6 +2,56 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.1] — 2026-09-09
+
+Three ways to lose work or the window, and a way to find out why next time.
+0.1.0 was published a few hours earlier and failed to start on another
+machine; everything here came out of chasing that.
+
+### Fixed
+
+- **The editor died on any window wider than 2048 pixels.** This is the 0.1.0
+  crash: a window appears and the process goes. The device was asked for
+  wgpu's downlevel limits, whose `max_texture_dimension_2d` is 2048, and a
+  surface is a texture — so configuring one for a larger window is a
+  validation error, which wgpu reports by panicking rather than by handing
+  back something that could be shown.
+
+  2048 physical pixels is not a large window. The default 960 logical is 2160
+  at 225% display scaling and 2880 at 300%, ordinary settings on a 4K laptop,
+  where it failed before the first frame. Every other machine met it on
+  resize: maximizing on any monitor wider than 2048 did it, so 1440p and 4K
+  were one drag away. The resolution limits now come from the adapter, the
+  rest stay downlevel so weak hardware is still supported, and both configure
+  paths clamp as well, because the failure mode is a panic rather than
+  anything recoverable.
+
+- **Quitting threw away buffers you were never asked about.** `^X` checked
+  only the buffer in front of you, and leaving deletes every buffer's recovery
+  file — so editing one file, switching to another, and quitting discarded the
+  edits *and* the copy that would have got them back, without a question. It
+  now asks about each unsaved buffer in turn, bringing each to the front so
+  the question is about a file you can see, and says how many others are still
+  unsaved so "No" cannot look like it discards only what is on screen.
+
+- **Two files could share one recovery file.** They were keyed on the path as
+  typed, so `aitch notes.txt` run in two different projects hashed the same
+  relative string: the second run overwrote the first run's unsaved work and
+  then offered what survived back as the wrong project's file. The reverse
+  held too — `C:\X\A.TXT` and `c:\x\a.txt` are one file on Windows that keyed
+  to two, leaving a recovery nothing would ever clear away. Keys and matching
+  are now on what the path resolves to, so a recovery belongs to a file rather
+  than to a spelling.
+
+### Added
+
+- **A startup log**, at `%LOCALAPPDATA%\aitch\startup.log`. A GUI program that
+  dies before its first frame has nowhere to say why: the message went to
+  stderr, and launched from the Start menu Windows gives it a console that
+  closes with the process. Worse, the failure that actually shipped was a
+  *panic*, so it never reached the code that prints anything. Both are written
+  down now, one line each, the last twenty kept.
+
 ## [0.1.0] — 2026-09-09
 
 The first release. Everything below, from Phase 0 through Phase 8: the editor,
