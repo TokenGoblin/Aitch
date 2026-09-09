@@ -1,0 +1,107 @@
+name: Release
+
+# Tag a version to cut a release:
+#     git tag v0.1.0 && git push origin v0.1.0
+#
+# Or run it by hand from the Actions tab to get an installer to test with,
+# without publishing anything.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (defaults to Cargo.toml)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    name: Windows installer
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The tests are the gate. An installer nobody can trust is worse than
+      # no installer, and this is the last point at which that is cheap.
+      - name: Test
+        run: cargo test --workspace --release
+
+      - name: Install WiX
+        run: dotnet tool install --global wix --version 5.0.2
+
+      - name: Work out the version
+        id: version
+        shell: pwsh
+        run: |
+          $version = '${{ inputs.version }}'
+          if (-not $version -and '${{ github.ref_type }}' -eq 'tag') {
+            $version = '${{ github.ref_name }}' -replace '^v', ''
+          }
+          if (-not $version) {
+            $cargo = Get-Content Cargo.toml -Raw
+            if ($cargo -match '(?m)^version\s*=\s*"([^"]+)"') { $version = $Matches[1] }
+          }
+          if (-not $version) { throw 'Could not work out a version' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Building $version"
+
+      # build.ps1 remaps source paths out of the binary and refuses to package
+      # one that still carries the build machine's home directory.
+      - name: Build the installer
+        shell: pwsh
+        run: ./packaging/windows/build.ps1 -Version ${{ steps.version.outputs.version }}
+
+      - name: Check the installer opens
+        shell: pwsh
+        run: |
+          $msi = "target/wix/aitch-${{ steps.version.outputs.version }}-x86_64.msi"
+          if (-not (Test-Path $msi)) { throw "no installer at $msi" }
+
+          # A readable Property table is the cheapest proof the file is a real
+          # MSI rather than something that merely has the extension.
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $db = $installer.GetType().InvokeMember(
+            'OpenDatabase', 'InvokeMethod', $null, $installer, @((Resolve-Path $msi).Path, 0))
+          $view = $db.GetType().InvokeMember(
+            'OpenView', 'InvokeMethod', $null, $db,
+            @("SELECT Value FROM Property WHERE Property = 'Manufacturer'"))
+          $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
+          $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+          $manufacturer = $record.GetType().InvokeMember(
+            'StringData', 'GetProperty', $null, $record, @(1))
+          if ($manufacturer -ne 'TokenGoblin') {
+            throw "Manufacturer is '$manufacturer'"
+          }
+          Write-Host "MSI is valid, published by $manufacturer"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aitch-${{ steps.version.outputs.version }}-windows-x86_64-msi
+          path: target/wix/*.msi
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/wix/*.msi
+          generate_release_notes: true
+          body: |
+            Windows installer for Aitch ${{ steps.version.outputs.version }}.
+
+            Installs per-user into `%LOCALAPPDATA%\Programs\Aitch` — no
+            administrator prompt — and puts `aitch` on your PATH.
+
+            New to it? [docs/guide.md](https://github.com/TokenGoblin/Aitch/blob/main/docs/guide.md)
+            is the guide.

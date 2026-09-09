@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
@@ -27,3 +27,9 @@ toml = "0.8"
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+# Note: released binaries are built with --remap-path-prefix, because Rust
+# otherwise writes the absolute path of every source file into panic messages
+# and debug info -- the build machine's home directory and $CARGO_HOME
+# included. packaging/windows/build.ps1 sets it and then refuses to package a
+# binary that still carries such a path. The profile option that would do it
+# here, trim-paths, is not stable in cargo 1.98.

@@ -4,6 +4,45 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-09-08
+
+The first release. Everything below, from Phase 0 through Phase 7, plus a
+Windows installer.
+
+### Packaging
+
+- **A Windows installer.** Per-user, into `%LOCALAPPDATA%\Programs\Aitch`,
+  so there is no administrator prompt; puts `aitch` on the PATH so
+  `EDITOR=aitch` works; ships the guide beside the binary. Built by
+  `packaging/windows/build.ps1`, or by the release workflow on a tag.
+- Released binaries are built with `--remap-path-prefix`, and the packaging
+  script **refuses to package a binary that still carries the build
+  machine's home directory**. Rust writes the absolute path of every source
+  file into panic messages and debug info; before this the binary named the
+  builder's home directory 639 times.
+
+### Documentation
+
+- [`docs/guide.md`](docs/guide.md), a guide for people who want to use the
+  editor rather than read about its design: the screen, the keys, projects,
+  searching, recovery and configuration.
+- `crates/aitch-harness/tests/documentation.rs` checks the guide against the
+  keymap — every chord it names parses and is bound to something — and
+  against the list of languages that are actually highlighted. It caught the
+  guide claiming `^A` selects all (it goes to the start of the line), `^V`
+  pastes (it is a page down), `M-W` finds backwards (it finds forwards), and
+  Go, Java and Ruby highlighting, none of which exists.
+- A README section listing what the editor does *not* do yet, rather than
+  leaving it to be discovered.
+
+### Known limitations
+
+- Cold start is about 400 ms against a 150 ms budget, nearly all of it GPU
+  surface setup, and the process holds about 215 MB of mostly fixed
+  GPU-initialisation memory.
+- No soft wrap; no highlighting inside Markdown code fences; no double-click
+  word selection; one window.
+
 ### Phase 7 — Configuration, sessions and recovery
 
 Added:

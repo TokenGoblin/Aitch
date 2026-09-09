@@ -8,18 +8,45 @@ context-sensitive shortcuts, always visible, generated from the active keymap
 rather than hardcoded. Prompts happen on a line above the footer. No modal
 dialogs, no floating windows.
 
-**Status: Phase 7.** It looks and behaves like nano, opens folders, highlights
-thirteen languages, searches a whole tree, and reads a config file that
-applies as you save it. Packaging is Phase 8. See [`PLAN.md`](PLAN.md).
+**Status: 0.1.0.** It looks and behaves like nano, opens folders, highlights
+thirteen languages, searches a whole tree, reads a config file that applies as
+you save it, and keeps your work when it does not shut down cleanly. There is
+a Windows installer. See [`PLAN.md`](PLAN.md) for what is built and what is
+not, and [known limitations](#known-limitations) below.
+
+**New to it? [`docs/guide.md`](docs/guide.md) is the guide** — everything you
+need in the order you need it.
+
+## Install
+
+**Windows.** Download the `.msi` from the
+[latest release](https://github.com/TokenGoblin/Aitch/releases/latest) and run
+it. It installs per-user into `%LOCALAPPDATA%\Programs\Aitch`, so there is no
+administrator prompt, and puts `aitch` on your PATH.
+
+**Anywhere else,** and to build it yourself — needs a stable Rust toolchain,
+1.85 or newer:
+
+```
+cargo install --path crates/aitch
+```
+
+Linux and macOS packages are not built yet; the editor itself runs on both.
 
 ## Build and run
-
-Needs a stable Rust toolchain.
 
 ```
 cargo test --workspace
 cargo run -p aitch -- some-file.txt
 cargo run -p aitch -- some/folder
+```
+
+To build the Windows installer, with the [WiX toolset](https://wixtoolset.org)
+installed as a dotnet tool:
+
+```
+dotnet tool install --global wix --version 5.0.2
+./packaging/windows/build.ps1
 ```
 
 Type. Arrow keys, Home/End, PgUp/PgDn, Ctrl+arrows for words, Ctrl+Home/End
@@ -103,6 +130,16 @@ Two profiles ship, both just data:
 `M-M` switches between them. Writing your own is the same format:
 [`docs/keymap.md`](docs/keymap.md).
 
+## Documentation
+
+| | |
+|---|---|
+| [`docs/guide.md`](docs/guide.md) | How to use it, start to finish |
+| [`docs/config.md`](docs/config.md) | Every setting, and where the file goes |
+| [`docs/keymap.md`](docs/keymap.md) | Writing your own keymap |
+| [`CHANGELOG.md`](CHANGELOG.md) | What changed, and what it measured |
+| [`PLAN.md`](PLAN.md) | The design, and the budgets it is held to |
+
 ## Testing
 
 ```
@@ -113,6 +150,22 @@ cargo run -p aitch-ui --example dump_frame -- file.rs frame.raw
 
 `dump_frame` renders a frame headlessly and writes raw RGBA, so the one
 remaining manual step — looking at the text — needs no display.
+
+## Known limitations
+
+Honest about what it does not do yet:
+
+- **Cold start is about 400 ms**, against a 150 ms budget. Setting up the GPU
+  surface is nearly all of it.
+- **It holds about 215 MB** with a file open, almost all of it fixed cost from
+  GPU initialisation rather than anything to do with the file. A 50 MB log
+  adds around 75 MB on top of that.
+- **No soft wrap.** Long lines scroll sideways.
+- **Highlighting inside Markdown code fences** is not done — the fence is
+  highlighted, its contents are not.
+- **Double-click to select a word** is not wired up; use `^6` and the arrows,
+  or Shift with a movement key.
+- **One window.** Several buffers, no second window.
 
 ## Not goals
 

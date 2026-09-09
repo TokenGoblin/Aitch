@@ -1,0 +1,128 @@
+<#
+.SYNOPSIS
+    Build the Windows installer.
+
+.DESCRIPTION
+    Compiles a release binary, checks it carries nothing about the machine
+    that built it, turns LICENSE into the RTF the installer UI wants, and
+    hands both to WiX.
+
+    Needs the WiX toolset, which is a dotnet tool:
+        dotnet tool install --global wix --version 5.0.2
+
+.EXAMPLE
+    .\packaging\windows\build.ps1
+    .\packaging\windows\build.ps1 -Version 0.1.0 -SkipBuild
+#>
+[CmdletBinding()]
+param(
+    # Defaults to the workspace version in Cargo.toml.
+    [string] $Version,
+    # Package the release binary that is already built. It is still checked.
+    [switch] $SkipBuild
+)
+
+$ErrorActionPreference = 'Stop'
+
+$root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$outputDir = Join-Path $root 'target\wix'
+$binary = Join-Path $root 'target\release\aitch.exe'
+
+if (-not $Version) {
+    $cargo = Get-Content (Join-Path $root 'Cargo.toml') -Raw
+    if ($cargo -notmatch '(?m)^version\s*=\s*"([^"]+)"') {
+        throw 'Could not read the version out of Cargo.toml'
+    }
+    $Version = $Matches[1]
+}
+Write-Host "Packaging Aitch $Version"
+
+if (-not $SkipBuild) {
+    # Rust puts the absolute path of every source file into panic messages and
+    # debug info, which means the build machine's home directory and its
+    # CARGO_HOME end up in the shipped binary. `trim-paths` would do this in
+    # the profile, but it is not stable in cargo 1.98, so remap by hand.
+    $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+    $flags = @(
+        "--remap-path-prefix=$cargoHome=[cargo]",
+        "--remap-path-prefix=$root=[aitch]"
+    )
+    if ($env:USERPROFILE) {
+        $flags += "--remap-path-prefix=$env:USERPROFILE=[home]"
+    }
+
+    # CARGO_ENCODED_RUSTFLAGS, not RUSTFLAGS: the latter is split on spaces,
+    # so a checkout under a path like "Code Projects" would tear a flag in
+    # half. This one is separated by U+001F and carries spaces intact.
+    $encoded = $flags -join [char]0x1f
+
+    Push-Location $root
+    $previous = $env:CARGO_ENCODED_RUSTFLAGS
+    try {
+        $env:CARGO_ENCODED_RUSTFLAGS = $encoded
+        cargo build --release -p aitch
+        if ($LASTEXITCODE -ne 0) { throw "cargo build failed ($LASTEXITCODE)" }
+    } finally {
+        $env:CARGO_ENCODED_RUSTFLAGS = $previous
+        Pop-Location
+    }
+}
+
+if (-not (Test-Path $binary)) {
+    throw "No release binary at $binary. Run without -SkipBuild."
+}
+
+# Nothing about this machine goes out in a published binary. This is a hard
+# failure, not a warning: it is far easier to notice here than after upload.
+$bytes = [System.IO.File]::ReadAllBytes($binary)
+$text = [System.Text.Encoding]::ASCII.GetString($bytes)
+$leaks = [regex]::Matches($text, '[A-Za-z]:\\Users\\[A-Za-z0-9_.-]+') |
+    ForEach-Object { $_.Value } | Sort-Object -Unique
+if ($leaks) {
+    throw ("The release binary carries paths from the machine that built it: " +
+           ($leaks -join ', ') +
+           ". Rebuild without -SkipBuild so the remapping is applied.")
+}
+Write-Host 'Binary carries no build-machine paths'
+
+New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+
+# The installer UI shows the licence, and insists on RTF. This is the
+# smallest RTF that renders plain text correctly: escape the backslashes and
+# braces, and turn line breaks into paragraph breaks. Each -replace is
+# parenthesised because PowerShell will not chain them.
+$licenseRtf = Join-Path $outputDir 'license.rtf'
+$licenseText = Get-Content (Join-Path $root 'LICENSE') -Raw
+$escaped = ($licenseText -replace '\\', '\\')
+$escaped = ($escaped -replace '\{', '\{')
+$escaped = ($escaped -replace '\}', '\}')
+$escaped = ($escaped -replace "`r`n", "`n")
+$escaped = ($escaped -replace "`n", "\par`n")
+$rtf = '{\rtf1\ansi\deff0{\fonttbl{\f0\fnil\fcharset0 Segoe UI;}}' + "`n" +
+       '\fs18' + "`n" + $escaped + "`n" + '}'
+Set-Content -Path $licenseRtf -Value $rtf -Encoding ascii
+
+# The docs that ship beside the binary are named in aitch.wxs, relative to
+# the repository root. A missing one is a build failure rather than a silent
+# omission; crates/aitch-harness/tests/documentation.rs checks the same list.
+foreach ($doc in @('README.md', 'LICENSE', 'docs\guide.md', 'docs\config.md', 'docs\keymap.md')) {
+    if (-not (Test-Path (Join-Path $root $doc))) {
+        throw "aitch.wxs ships $doc, which is not there"
+    }
+}
+
+$msi = Join-Path $outputDir "aitch-$Version-x86_64.msi"
+
+wix build (Join-Path $PSScriptRoot 'aitch.wxs') `
+    -define "Version=$Version" `
+    -define "BinaryPath=$binary" `
+    -define "DocsPath=$root" `
+    -define "LicenseRtf=$licenseRtf" `
+    -ext WixToolset.UI.wixext `
+    -arch x64 `
+    -out $msi
+
+if ($LASTEXITCODE -ne 0) { throw "wix build failed ($LASTEXITCODE)" }
+
+$size = [math]::Round((Get-Item $msi).Length / 1MB, 1)
+Write-Host "Built $msi ($size MB)"
