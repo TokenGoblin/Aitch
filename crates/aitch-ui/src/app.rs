@@ -673,3 +673,30 @@ fn window_icon() -> Option<Icon> {
     // up as None and winit falls back to the platform default.
     Icon::from_rgba(pixels.to_vec(), width, height).ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_window_icon_is_there_and_the_right_shape() {
+        // window_icon() answers None on anything it does not like, and winit
+        // then quietly uses the platform default -- so a truncated or
+        // regenerated-at-the-wrong-size asset would cost the icon with nothing
+        // said. This is the loud version of that.
+        const RAW: &[u8] = include_bytes!("../assets/icon.rgba");
+        let width = u32::from_le_bytes(RAW[0..4].try_into().unwrap());
+        let height = u32::from_le_bytes(RAW[4..8].try_into().unwrap());
+
+        assert_eq!(width, height, "{width}x{height} is not square");
+        assert_eq!(
+            RAW.len() - 8,
+            (width * height * 4) as usize,
+            "the pixels do not match the {width}x{height} header"
+        );
+        assert!(
+            window_icon().is_some(),
+            "winit would not take the icon, so the window would have none"
+        );
+    }
+}
