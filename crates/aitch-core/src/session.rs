@@ -246,6 +246,59 @@ impl Recovery {
 }
 
 /// Where Aitch keeps what it remembers.
+/// Where a startup failure is written down.
+pub fn failure_log() -> Option<PathBuf> {
+    state_dir().map(|dir| dir.join("startup.log"))
+}
+
+/// Record something that stopped the editor starting.
+///
+/// A GUI program that dies before its first frame has nowhere to say why. The
+/// message goes to stderr, but `aitch` is a console-subsystem binary: started
+/// from the Start menu, Windows gives it a console that closes with the
+/// process, so the explanation exists for a frame and is gone. A panic is
+/// worse still — it never reaches the code that prints anything.
+///
+/// So it goes in a file as well. Appended rather than replaced, and capped,
+/// because the second failure is often the informative one and a log nobody
+/// prunes is its own bug.
+pub fn log_failure(message: &str) {
+    let Some(path) = failure_log() else {
+        return;
+    };
+    let Some(directory) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(directory).is_err() {
+        return;
+    }
+
+    // One line per failure, however many lines the message itself has: a log
+    // that can be skimmed is worth more than one that preserves formatting.
+    let flattened = message.replace(['\n', '\r'], " ");
+    let entry = format!("{} {}\n", timestamp(), flattened.trim());
+
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let kept: Vec<&str> = existing
+        .lines()
+        .rev()
+        .take(FAILURE_LOG_LINES - 1)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(&entry);
+    let _ = std::fs::write(&path, out);
+}
+
+/// How many past failures the log keeps.
+const FAILURE_LOG_LINES: usize = 20;
+
 fn state_dir() -> Option<PathBuf> {
     if cfg!(windows) {
         std::env::var_os("LOCALAPPDATA").map(|base| PathBuf::from(base).join("aitch"))
@@ -365,6 +418,57 @@ fn stable_hash(text: &str) -> u64 {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
+}
+
+#[cfg(test)]
+mod failure_log_tests {
+    use super::*;
+
+    #[test]
+    fn a_failure_becomes_one_line_however_many_it_had() {
+        // Skimmable beats faithful: a wgpu validation error arrives as a
+        // paragraph, and a log with one entry per failure can be read at a
+        // glance and tailed.
+        let raw = "wgpu error: Validation Error\n\nCaused by:\n  too large\n";
+        let flattened = raw.replace(['\n', '\r'], " ");
+
+        assert!(!flattened.contains('\n'));
+        assert!(flattened.contains("Validation Error"));
+        assert!(flattened.contains("too large"));
+    }
+
+    #[test]
+    fn the_log_keeps_the_most_recent_failures_and_drops_the_rest() {
+        // The second failure is usually the informative one, so this keeps
+        // history -- but a log nobody prunes is its own bug.
+        let existing: Vec<String> = (0..50).map(|i| format!("line {i}")).collect();
+        let kept: Vec<&str> = existing
+            .iter()
+            .map(String::as_str)
+            .rev()
+            .take(FAILURE_LOG_LINES - 1)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+
+        assert_eq!(kept.len(), FAILURE_LOG_LINES - 1);
+        assert_eq!(*kept.last().expect("a last line"), "line 49", "newest kept");
+        assert_eq!(kept[0], "line 31", "oldest dropped");
+    }
+
+    #[test]
+    fn the_log_sits_beside_the_other_state() {
+        // Whatever the platform, it belongs with the sessions and the
+        // recovery files rather than somewhere of its own.
+        if let (Some(log), Some(recovery)) = (failure_log(), Recovery::directory()) {
+            assert_eq!(log.parent(), recovery.parent());
+            assert_eq!(
+                log.file_name().and_then(|n| n.to_str()),
+                Some("startup.log")
+            );
+        }
+    }
 }
 
 #[cfg(test)]

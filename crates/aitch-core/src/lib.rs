@@ -49,7 +49,7 @@ pub use project::{PathIndex, Tree};
 pub use project_search::{Hit, Pattern, ProjectSearch};
 pub use prompt::{Answer, Histories, Prompt};
 pub use search::{Direction, Match, Query};
-pub use session::{OpenFile, Recovery, Session};
+pub use session::{failure_log, log_failure, OpenFile, Recovery, Session};
 pub use syntax::{Highlighter, Language, Span, Token};
 pub use watcher::Watcher;
 pub use workspace::Workspace;

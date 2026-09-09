@@ -43,6 +43,8 @@ struct Arguments {
 }
 
 fn main() -> ExitCode {
+    record_panics();
+
     let arguments = match parse(std::env::args().skip(1)) {
         Ok(Some(arguments)) => arguments,
         // --help and --version have already printed.
@@ -115,6 +117,7 @@ fn main() -> ExitCode {
 
     if let Err(e) = aitch_ui::run(startup) {
         eprintln!("aitch: {e}");
+        aitch_core::log_failure(&e.to_string());
         return ExitCode::FAILURE;
     }
 
@@ -244,6 +247,37 @@ fn build_workspace(arguments: &Arguments, piped: Option<String>) -> Result<Works
 /// Where the cursor should start, given `+LINE:COLUMN`.
 pub fn starting_position(at: (usize, usize)) -> Position {
     Position::new(at.0.saturating_sub(1), at.1.saturating_sub(1))
+}
+
+/// Write panics down as well as printing them.
+///
+/// A window opens before the GPU surface is built, so a failure there looks
+/// like the editor starting and vanishing. The message goes to stderr, but
+/// `aitch` is a console-subsystem binary: launched from the Start menu,
+/// Windows gives it a console that closes with the process, so the
+/// explanation exists for a frame. Started from a terminal it is visible, and
+/// that is the difference between a bug report that says "it crashes" and one
+/// that names the cause.
+///
+/// Panics matter more here than returned errors do. wgpu reports a surface it
+/// cannot configure by panicking — `Surface::configure` returns `()` — so the
+/// one failure that has actually shipped never reached the error path at all.
+///
+/// The default hook still runs, so nothing that worked before stops working.
+fn record_panics() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // `info` already carries the file and line, so it is not repeated.
+        aitch_core::log_failure(&info.to_string());
+        previous(info);
+    }));
+
+    if let Some(path) = aitch_core::failure_log() {
+        // Only worth saying where it went once something has gone in it.
+        if path.exists() {
+            eprintln!("aitch: earlier failures are logged in {}", path.display());
+        }
+    }
 }
 
 #[cfg(test)]
