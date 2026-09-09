@@ -46,8 +46,9 @@ jobs:
           sudo apt-get install -y libvulkan1 mesa-vulkan-drivers vulkan-tools
           echo "--- Vulkan ICDs on this runner ---"
           ls -la /usr/share/vulkan/icd.d/ || echo "no ICD directory"
-          echo "--- what the loader sees ---"
-          vulkaninfo --summary 2>&1 | head -40 || echo "vulkaninfo failed"
+          echo "--- devices the loader enumerates ---"
+          vulkaninfo --summary 2>&1 | sed -n '/Devices:/,$p' | head -25 \
+            || echo "vulkaninfo failed"
 
       - name: Format
         run: cargo fmt --all --check
@@ -62,9 +63,6 @@ jobs:
         run: cargo test --workspace
         env:
           AITCH_REQUIRE_GPU: 1
-          # Point the loader straight at lavapipe rather than hoping it is
-          # picked up. Harmless on Windows, where the variable is ignored.
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
 
       - name: Build
         run: cargo build --workspace --release
