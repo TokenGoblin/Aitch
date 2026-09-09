@@ -15,7 +15,7 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use aitch_core::{Command, Document, Editor, Outcome};
+use aitch_core::{Command, Editor, Outcome, Watcher, Workspace};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -30,14 +30,32 @@ use crate::theme::Theme;
 /// How many lines one notch of a wheel scrolls, matching the usual desktop feel.
 const WHEEL_LINES: f64 = 3.0;
 
-/// Open a window on `document` and run until it closes.
-pub fn run(document: Document) -> Result<(), Box<dyn Error>> {
-    let event_loop = EventLoop::new()?;
+/// Why the event loop was woken from outside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wake {
+    /// Something in the open folder changed on disk.
+    FolderChanged,
+}
+
+/// Open a window on `workspace` and run until it closes.
+pub fn run(workspace: Workspace) -> Result<(), Box<dyn Error>> {
+    let event_loop = EventLoop::<Wake>::with_user_event().build()?;
     // Event-driven redraw only. PLAN.md §6: idle CPU is 0%, and a spinning
-    // render loop is the one way to fail that budget by construction.
+    // render loop is the one way to fail that budget by construction. The
+    // watcher below fits that: its thread blocks, and waking the loop is a
+    // message rather than a poll.
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let mut app = App::new(Editor::new(document));
+    let root = workspace.root().map(std::path::Path::to_path_buf);
+    let mut app = App::new(Editor::with_workspace(workspace));
+
+    if let Some(root) = root {
+        let proxy = event_loop.create_proxy();
+        app.watcher = Watcher::new(&root, move || {
+            // The loop may already be gone; nothing to do about it here.
+            let _ = proxy.send_event(Wake::FolderChanged);
+        });
+    }
     event_loop.run_app(&mut app)?;
 
     match app.failure {
@@ -56,6 +74,10 @@ struct App {
     /// a headless session, say — in which case copy and paste say so rather
     /// than taking the editor down with them.
     clipboard: Option<arboard::Clipboard>,
+
+    /// Watches the open folder. Held so that dropping the app stops it;
+    /// `None` when there is no folder, or the platform will not watch.
+    watcher: Option<Watcher>,
 
     /// Distance from the top of the document in physical pixels.
     ///
@@ -82,6 +104,7 @@ impl App {
             theme: Theme::default(),
             editor,
             clipboard: arboard::Clipboard::new().ok(),
+            watcher: None,
             scroll: 0.0,
             modifiers: ModifiersState::empty(),
             pointer: PhysicalPosition::new(0.0, 0.0),
@@ -215,7 +238,20 @@ impl App {
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<Wake> for App {
+    /// Woken from outside: the folder changed.
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: Wake) {
+        match event {
+            Wake::FolderChanged => {
+                if self.editor.folder_changed().redraws() {
+                    self.generation += 1;
+                    self.refresh_title();
+                    self.redraw();
+                }
+            }
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         // On Android this fires again after a suspend; everywhere else, once.
         if self.window.is_some() {

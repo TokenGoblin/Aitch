@@ -18,7 +18,7 @@
 
 use std::io::Write;
 
-use aitch_core::{Buffer, Chord, Command, Document, Editor};
+use aitch_core::{Buffer, Chord, Command, Document, Editor, Workspace};
 use aitch_ui::render::atlas::Atlas;
 use aitch_ui::render::quads::{Instances, QuadPipeline};
 use aitch_ui::render::screen::{self, Layout};
@@ -59,7 +59,18 @@ fn main() {
     let mut document = Document::blank();
     document.buffer = Buffer::from_str(&text_src);
     document.set_path(std::path::PathBuf::from(&input));
-    let mut editor = Editor::new(document);
+
+    // Root the workspace at the file's folder, so M-T and ^T have something
+    // to show.
+    let mut workspace = Workspace::new(document);
+    if let Some(parent) = std::path::Path::new(&input)
+        .canonicalize()
+        .ok()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+    {
+        workspace.set_root(parent);
+    }
+    let mut editor = Editor::with_workspace(workspace);
 
     let mut atlas = Atlas::new(&device, &queue, 1024);
     let mut pipeline = QuadPipeline::new(&device, FORMAT, atlas.bind_group_layout());

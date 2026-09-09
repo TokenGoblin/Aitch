@@ -160,7 +160,21 @@ impl TextRenderer {
         y_offset: f32,
         theme: &Theme,
     ) {
-        self.push_selection(instances, atlas.white(), buffer, y_offset, theme);
+        self.push_instances_at(queue, atlas, instances, buffer, (0.0, y_offset), theme);
+    }
+
+    /// The same, offset from the left as well — the sidebar takes a column.
+    pub fn push_instances_at(
+        &mut self,
+        queue: &wgpu::Queue,
+        atlas: &mut Atlas,
+        instances: &mut Instances,
+        buffer: &Buffer,
+        offset: (f32, f32),
+        theme: &Theme,
+    ) {
+        let (x_offset, y_offset) = offset;
+        self.push_selection(instances, atlas.white(), buffer, offset, theme);
 
         // Split the borrow so the atlas can rasterize while the layout is read.
         let TextRenderer {
@@ -179,7 +193,7 @@ impl TextRenderer {
                 };
 
                 let position = [
-                    physical.x as f32 + entry.offset[0],
+                    x_offset + physical.x as f32 + entry.offset[0],
                     baseline + physical.y as f32 + entry.offset[1],
                 ];
                 let kind = if entry.color { Kind::Color } else { Kind::Mask };
@@ -187,7 +201,7 @@ impl TextRenderer {
             }
         }
 
-        self.push_cursor(instances, atlas.white(), buffer, y_offset, theme);
+        self.push_cursor(instances, atlas.white(), buffer, offset, theme);
     }
 
     /// Draw the selection behind the text, one band per visible line.
@@ -200,9 +214,10 @@ impl TextRenderer {
         instances: &mut Instances,
         white: crate::render::atlas::Entry,
         buffer: &Buffer,
-        y_offset: f32,
+        offset: (f32, f32),
         theme: &Theme,
     ) {
+        let (x_offset, y_offset) = offset;
         let Some(range) = buffer.selection() else {
             return;
         };
@@ -249,7 +264,7 @@ impl TextRenderer {
             }
 
             instances.push_rect(
-                [x, run.line_top + y_offset],
+                [x_offset + x, run.line_top + y_offset],
                 [width, self.line_height()],
                 white,
                 theme.selection,
@@ -315,9 +330,10 @@ impl TextRenderer {
         instances: &mut Instances,
         white: crate::render::atlas::Entry,
         buffer: &Buffer,
-        y_offset: f32,
+        offset: (f32, f32),
         theme: &Theme,
     ) {
+        let (x_offset, y_offset) = offset;
         let cursor = buffer.cursor();
         let Some(layout_line) = cursor.line.checked_sub(self.first_line) else {
             return;
@@ -332,7 +348,7 @@ impl TextRenderer {
         };
 
         instances.push_rect(
-            [x, top + y_offset],
+            [x_offset + x, top + y_offset],
             [CURSOR_WIDTH * self.scale_factor, self.line_height()],
             white,
             theme.cursor,

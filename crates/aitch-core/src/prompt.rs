@@ -37,12 +37,21 @@ pub enum Kind {
     },
     /// Save before quitting?
     SaveBeforeQuit,
+    /// Fuzzy path search across the folder, with results above the line.
+    QuickOpen,
+    /// The open buffers, to pick one.
+    BufferList,
+    /// The file changed on disk since it was read. Save over it anyway?
+    OverwriteChanged,
 }
 
 impl Kind {
     /// Whether this prompt takes typed text, or a single-key answer.
     pub fn is_question(&self) -> bool {
-        matches!(self, Kind::ReplaceConfirm { .. } | Kind::SaveBeforeQuit)
+        matches!(
+            self,
+            Kind::ReplaceConfirm { .. } | Kind::SaveBeforeQuit | Kind::OverwriteChanged
+        )
     }
 
     /// Whether the buffer should follow along as the term is typed.
@@ -50,12 +59,21 @@ impl Kind {
         matches!(self, Kind::Search { .. })
     }
 
+    /// Whether this prompt shows a list of choices above the line.
+    ///
+    /// The arrows move through that list rather than through past answers:
+    /// when there is something on screen to pick from, that is what the
+    /// arrows are obviously for.
+    pub fn has_results(&self) -> bool {
+        matches!(self, Kind::QuickOpen | Kind::BufferList)
+    }
+
     /// Which history list this prompt draws on. Questions have none.
     pub fn history(&self) -> Option<HistoryKind> {
         match self {
             Kind::Search { .. } | Kind::ReplaceFind => Some(HistoryKind::Search),
             Kind::ReplaceWith { .. } => Some(HistoryKind::Replace),
-            Kind::SaveAs | Kind::InsertFile => Some(HistoryKind::File),
+            Kind::SaveAs | Kind::InsertFile | Kind::QuickOpen => Some(HistoryKind::File),
             Kind::GotoLine => Some(HistoryKind::Goto),
             _ => None,
         }
@@ -75,6 +93,11 @@ impl Kind {
             Kind::ReplaceWith { find } => format!("Replace {find:?} with"),
             Kind::ReplaceConfirm { .. } => "Replace this instance?".to_string(),
             Kind::SaveBeforeQuit => "Save modified buffer?".to_string(),
+            Kind::QuickOpen => "Open file".to_string(),
+            Kind::BufferList => "Switch to buffer".to_string(),
+            Kind::OverwriteChanged => {
+                "File changed on disk since you opened it. Save anyway?".to_string()
+            }
         }
     }
 }

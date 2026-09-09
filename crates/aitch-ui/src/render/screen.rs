@@ -18,6 +18,13 @@ use crate::theme::Theme;
 /// Rows at the bottom that belong to the editor rather than the document.
 pub const CHROME_ROWS: usize = 3;
 
+/// Width of the sidebar in character cells, when it is showing.
+pub const SIDEBAR_COLUMNS: usize = 28;
+
+/// Most rows of quick-open results to show above the prompt line. Enough to
+/// choose from; not so many that the file being edited disappears.
+pub const RESULT_ROWS: usize = 8;
+
 /// Where and at what scale a frame is being drawn.
 #[derive(Debug, Clone, Copy)]
 pub struct Layout {
@@ -56,9 +63,20 @@ pub fn draw(
 ) {
     let (width, height) = layout.size;
     let line_height = text.line_height();
+    let cell = text.cell_width();
     let rows = text_rows(text, height);
-    let text_height = rows as f32 * line_height;
-    let _ = height;
+
+    // The sidebar takes a fixed column on the left; the document gets what is
+    // left. A results list eats rows from the bottom of the text area.
+    let sidebar_width = if editor.tree().is_some() {
+        SIDEBAR_COLUMNS as f32 * cell
+    } else {
+        0.0
+    };
+    let result_rows = editor.results().len().min(RESULT_ROWS);
+    let document_rows = rows.saturating_sub(result_rows).max(1);
+    let text_height = document_rows as f32 * line_height;
+    let text_width = (width - sidebar_width).max(cell);
 
     match editor.help() {
         // The help pane takes over the text area. Still not a dialog: the
@@ -73,15 +91,49 @@ pub fn draw(
         None => {
             let buffer = editor.buffer();
             let first_line = editor.viewport().first_line();
-            text.prepare(buffer, first_line, (width, text_height), layout.generation);
-            text.push_instances(
+            text.prepare(
+                buffer,
+                first_line,
+                (text_width, text_height),
+                layout.generation,
+            );
+            text.push_instances_at(
                 queue,
                 atlas,
                 instances,
                 buffer,
-                -layout.sub_line_offset,
+                (sidebar_width, -layout.sub_line_offset),
                 theme,
             );
+
+            if sidebar_width > 0.0 {
+                draw_sidebar(
+                    queue,
+                    atlas,
+                    text,
+                    instances,
+                    editor,
+                    theme,
+                    line_height,
+                    rows,
+                    sidebar_width,
+                );
+            }
+
+            if result_rows > 0 {
+                draw_results(
+                    queue,
+                    atlas,
+                    text,
+                    instances,
+                    editor,
+                    theme,
+                    line_height,
+                    document_rows,
+                    result_rows,
+                    width,
+                );
+            }
         }
     }
 
@@ -96,6 +148,109 @@ pub fn draw(
         line_height,
         rows,
     );
+}
+
+/// The file tree down the left-hand side.
+#[allow(clippy::too_many_arguments)]
+fn draw_sidebar(
+    queue: &wgpu::Queue,
+    atlas: &mut Atlas,
+    text: &mut TextRenderer,
+    instances: &mut Instances,
+    editor: &Editor,
+    theme: &Theme,
+    line_height: f32,
+    rows: usize,
+    sidebar_width: f32,
+) {
+    let Some(tree) = editor.tree() else { return };
+    let white = atlas.white();
+
+    instances.push_rect(
+        [0.0, 0.0],
+        [sidebar_width, rows as f32 * line_height],
+        white,
+        theme.chrome_background,
+    );
+
+    // Virtualized: only the rows on screen are ever built, so a tree of a
+    // hundred thousand files costs the same as one of ten.
+    let first = tree
+        .selected_index()
+        .saturating_sub(rows.saturating_sub(1) / 2)
+        .min(tree.len().saturating_sub(rows));
+
+    for (offset, row) in tree.rows().iter().skip(first).take(rows).enumerate() {
+        let y = offset as f32 * line_height;
+        let picked = first + offset == tree.selected_index();
+
+        if picked {
+            instances.push_rect(
+                [0.0, y],
+                [sidebar_width, line_height],
+                white,
+                theme.selection,
+            );
+        }
+        let color = if row.is_dir {
+            theme.cursor
+        } else {
+            theme.chrome_foreground
+        };
+        text.push_line(queue, atlas, instances, &row.label(), (0.0, y), color);
+    }
+}
+
+/// Quick-open hits, or the open buffers, listed above the prompt line.
+#[allow(clippy::too_many_arguments)]
+fn draw_results(
+    queue: &wgpu::Queue,
+    atlas: &mut Atlas,
+    text: &mut TextRenderer,
+    instances: &mut Instances,
+    editor: &Editor,
+    theme: &Theme,
+    line_height: f32,
+    document_rows: usize,
+    result_rows: usize,
+    width: f32,
+) {
+    let white = atlas.white();
+    let top = document_rows as f32 * line_height;
+
+    instances.push_rect(
+        [0.0, top],
+        [width, result_rows as f32 * line_height],
+        white,
+        theme.chrome_background,
+    );
+
+    // Scroll the window of results so the picked one is always in it.
+    let picked = editor.result_index();
+    let first = picked
+        .saturating_sub(result_rows.saturating_sub(1))
+        .min(editor.results().len().saturating_sub(result_rows));
+
+    for (offset, entry) in editor
+        .results()
+        .iter()
+        .skip(first)
+        .take(result_rows)
+        .enumerate()
+    {
+        let y = top + offset as f32 * line_height;
+        if first + offset == picked {
+            instances.push_rect([0.0, y], [width, line_height], white, theme.selection);
+        }
+        text.push_line(
+            queue,
+            atlas,
+            instances,
+            entry,
+            (0.0, y),
+            theme.chrome_foreground,
+        );
+    }
 }
 
 /// The status or prompt line, and the two footer rows.

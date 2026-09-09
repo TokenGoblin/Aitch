@@ -9,6 +9,10 @@ repository.workspace = true
 
 # NON-NEGOTIABLE: no winit, no wgpu, no cosmic-text in this file. See CLAUDE.md.
 [dependencies]
+# All three are named in PLAN.md's stack table for this phase.
+ignore = "0.4"
+notify = "8"
+nucleo = "0.5"
 ropey = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }

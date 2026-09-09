@@ -18,8 +18,10 @@ use crate::document::Document;
 use crate::fileio;
 use crate::footer::{self, Footer};
 use crate::keymap::{Context, Keymap};
+use crate::project::{PathIndex, Tree};
 use crate::prompt::{self, Answer, Histories, Kind, Prompt};
 use crate::search::{self, Direction, Match, Query};
+use crate::workspace::Workspace;
 
 /// What the caller must do after a command.
 ///
@@ -45,6 +47,10 @@ impl Outcome {
     }
 }
 
+/// How many quick-open hits to show. More than fits above the prompt line is
+/// wasted work, and the ranking means the answer is near the top or not there.
+const RESULT_LIMIT: usize = 50;
+
 /// The help pane: a scrollable list of lines, not a dialog.
 #[derive(Debug, Clone, Default)]
 pub struct Help {
@@ -53,7 +59,7 @@ pub struct Help {
 
 /// One editing session.
 pub struct Editor {
-    document: Document,
+    workspace: Workspace,
     viewport: Viewport,
     keymap: Keymap,
     context: Context,
@@ -65,13 +71,25 @@ pub struct Editor {
     /// The last search, so repeating it needs no prompt.
     query: Option<Query>,
     help: Option<Help>,
+    /// The sidebar, when a folder is open and it has been toggled on.
+    tree: Option<Tree>,
+    /// Built on first use of quick open; walking is the slow half.
+    index: Option<PathIndex>,
+    /// The list shown above the prompt line, and which row is picked.
+    results: Vec<String>,
+    result: usize,
     quitting: bool,
 }
 
 impl Editor {
     pub fn new(document: Document) -> Editor {
+        Editor::with_workspace(Workspace::new(document))
+    }
+
+    /// A session over a set of buffers, and optionally a folder.
+    pub fn with_workspace(workspace: Workspace) -> Editor {
         Editor {
-            document,
+            workspace,
             viewport: Viewport::new(24),
             keymap: Keymap::nano(),
             context: Context::Editor,
@@ -80,6 +98,10 @@ impl Editor {
             status: None,
             query: None,
             help: None,
+            tree: None,
+            index: None,
+            results: Vec::new(),
+            result: 0,
             quitting: false,
         }
     }
@@ -87,15 +109,23 @@ impl Editor {
     // -- what is on screen -------------------------------------------------
 
     pub fn document(&self) -> &Document {
-        &self.document
+        self.workspace.active()
+    }
+
+    pub fn workspace(&self) -> &Workspace {
+        &self.workspace
+    }
+
+    pub fn workspace_mut(&mut self) -> &mut Workspace {
+        &mut self.workspace
     }
 
     pub fn buffer(&self) -> &Buffer {
-        &self.document.buffer
+        &self.workspace.active().buffer
     }
 
     pub fn buffer_mut(&mut self) -> &mut Buffer {
-        &mut self.document.buffer
+        &mut self.workspace.active_mut().buffer
     }
 
     pub fn viewport(&self) -> &Viewport {
@@ -127,6 +157,21 @@ impl Editor {
         self.help.as_ref()
     }
 
+    /// The sidebar, when it is showing.
+    pub fn tree(&self) -> Option<&Tree> {
+        self.tree.as_ref()
+    }
+
+    /// The list above the prompt line: quick-open hits, or open buffers.
+    pub fn results(&self) -> &[String] {
+        &self.results
+    }
+
+    /// Which row of that list is picked.
+    pub fn result_index(&self) -> usize {
+        self.result
+    }
+
     pub fn should_quit(&self) -> bool {
         self.quitting
     }
@@ -142,12 +187,12 @@ impl Editor {
         if let Some(message) = &self.status {
             return message.clone();
         }
-        let modified = if self.document.is_dirty() {
+        let modified = if self.workspace.active().is_dirty() {
             "  Modified"
         } else {
             ""
         };
-        format!("{}{modified}", self.document.display_name())
+        format!("{}{modified}", self.workspace.active().display_name())
     }
 
     /// Set a transient message. It lasts until the next keystroke.
@@ -207,6 +252,7 @@ impl Editor {
         let outcome = match self.context {
             Context::Help => self.run_in_help(command),
             Context::Prompt | Context::Search => self.run_in_prompt(command),
+            Context::Tree => self.run_in_tree(command),
             _ => self.run_in_editor(command),
         };
 
@@ -217,7 +263,12 @@ impl Editor {
     }
 
     fn run_in_editor(&mut self, command: &Command) -> Outcome {
-        match self.document.buffer.apply(command, &self.viewport) {
+        match self
+            .workspace
+            .active_mut()
+            .buffer
+            .apply(command, &self.viewport)
+        {
             Applied::Changed => {
                 self.follow_cursor();
                 return Outcome::Redraw;
@@ -243,7 +294,7 @@ impl Editor {
             Command::GotoLine => self.open_prompt(Kind::GotoLine),
             Command::CursorPosition => self.report_position(),
 
-            Command::Copy => match self.document.buffer.selected_text() {
+            Command::Copy => match self.workspace.active().buffer.selected_text() {
                 Some(text) => Outcome::Copy(text),
                 None => {
                     self.say("nothing is selected");
@@ -252,7 +303,22 @@ impl Editor {
             },
             Command::Paste => Outcome::Paste,
 
-            Command::Refresh => Outcome::Redraw,
+            Command::ToggleTree => self.toggle_tree(),
+            Command::QuickOpen => self.open_quick_open(),
+            Command::BufferList => self.open_buffer_list(),
+            Command::NextBuffer => self.cycle_buffer(true),
+            Command::PrevBuffer => self.cycle_buffer(false),
+            Command::CloseBuffer => self.close_buffer(),
+
+            Command::Refresh => {
+                if let Some(tree) = self.tree.as_mut() {
+                    tree.refresh();
+                }
+                if self.workspace.active().changed_on_disk() {
+                    self.say("this file has changed on disk since you opened it");
+                }
+                Outcome::Redraw
+            }
             Command::SwitchProfile(profile) => match Keymap::by_name(profile) {
                 Some(keymap) => {
                     self.keymap = keymap;
@@ -318,6 +384,61 @@ impl Editor {
         }
     }
 
+    /// The sidebar has focus: move about it, open what is picked, or leave.
+    fn run_in_tree(&mut self, command: &Command) -> Outcome {
+        if self.tree.is_none() {
+            self.context = Context::Editor;
+            return Outcome::Redraw;
+        }
+
+        // Leaving is handled before the tree is borrowed.
+        match command {
+            // From inside, M-T puts the sidebar away entirely.
+            Command::ToggleTree => {
+                self.tree = None;
+                self.context = Context::Editor;
+                return Outcome::Redraw;
+            }
+            // Escape only gives the keys back; the sidebar stays.
+            Command::PromptCancel => {
+                self.context = Context::Editor;
+                return Outcome::Redraw;
+            }
+            Command::QuickOpen => return self.open_quick_open(),
+            Command::Help => return self.open_help(),
+            Command::Quit => return self.begin_quit(),
+            _ => {}
+        }
+
+        let page = self.viewport.height_lines().saturating_sub(1) as isize;
+        let tree = self.tree.as_mut().expect("checked above");
+
+        let moved = match command {
+            Command::MoveUp => tree.move_up(),
+            Command::MoveDown => tree.move_down(),
+            Command::MovePageUp => tree.move_by(-page),
+            Command::MovePageDown => tree.move_by(page),
+            Command::MoveBufferStart => tree.select(0),
+            Command::MoveBufferEnd => tree.select(usize::MAX),
+            Command::Refresh => {
+                tree.refresh();
+                true
+            }
+            Command::PromptAccept => match tree.activate() {
+                Some(path) => return self.open_path(&path),
+                // A folder opened or shut; the rows changed.
+                None => true,
+            },
+            _ => false,
+        };
+
+        if moved {
+            Outcome::Redraw
+        } else {
+            Outcome::Nothing
+        }
+    }
+
     fn run_in_prompt(&mut self, command: &Command) -> Outcome {
         let Some(prompt) = self.prompt.as_mut() else {
             self.context = Context::Editor;
@@ -352,6 +473,20 @@ impl Editor {
             Command::MoveLineStart => prompt.move_start(),
             Command::MoveLineEnd => prompt.move_end(),
 
+            // With a list on screen the arrows move through it. Past answers
+            // are the obvious meaning only when there is nothing to pick from.
+            Command::PromptHistoryPrev if prompt.kind.has_results() => {
+                let moved = self.result > 0;
+                self.result = self.result.saturating_sub(1);
+                moved
+            }
+            Command::PromptHistoryNext if prompt.kind.has_results() => {
+                let last = self.results.len().saturating_sub(1);
+                let moved = self.result < last;
+                self.result = (self.result + 1).min(last);
+                moved
+            }
+
             Command::PromptHistoryPrev => {
                 let kind = prompt.kind.history();
                 match kind {
@@ -385,6 +520,9 @@ impl Editor {
             {
                 self.search_from_prompt();
             }
+            if self.prompt.as_ref().is_some_and(|p| p.kind.has_results()) {
+                self.refresh_results();
+            }
             Outcome::Redraw
         } else {
             Outcome::Nothing
@@ -394,10 +532,11 @@ impl Editor {
     // -- prompts -----------------------------------------------------------
 
     fn open_prompt(&mut self, kind: Kind) -> Outcome {
-        let origin = self.document.buffer.cursor_char();
+        let origin = self.workspace.active().buffer.cursor_char();
         let prefill = match &kind {
             Kind::SaveAs => self
-                .document
+                .workspace
+                .active()
                 .path()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default(),
@@ -422,10 +561,9 @@ impl Editor {
             // A cancelled incremental search leaves the cursor where it began.
             if prompt.kind.is_incremental() {
                 let origin = prompt.origin;
-                self.document.buffer.clear_selection();
-                self.document
-                    .buffer
-                    .set_cursor(self.document.buffer.char_to_position(origin));
+                let position = self.workspace.active().buffer.char_to_position(origin);
+                self.workspace.active_mut().buffer.clear_selection();
+                self.workspace.active_mut().buffer.set_cursor(position);
                 self.follow_cursor();
             }
         }
@@ -451,14 +589,17 @@ impl Editor {
                     self.say("cancelled");
                     return Outcome::Redraw;
                 }
-                self.document.set_path(PathBuf::from(input.trim()));
+                self.workspace
+                    .active_mut()
+                    .set_path(PathBuf::from(input.trim()));
                 self.write_out()
             }
 
             Kind::GotoLine => match prompt::parse_goto(&input) {
                 Some((line, column)) => {
-                    let last = self.document.buffer.len_lines().saturating_sub(1);
-                    self.document
+                    let last = self.workspace.active().buffer.len_lines().saturating_sub(1);
+                    self.workspace
+                        .active_mut()
                         .buffer
                         .set_cursor(Position::new(line.min(last), column));
                     self.follow_cursor();
@@ -495,6 +636,31 @@ impl Editor {
 
             Kind::ReplaceWith { find } => self.begin_replace(find, input),
 
+            Kind::OverwriteChanged => Outcome::Redraw,
+
+            Kind::QuickOpen => match self.results.get(self.result).cloned() {
+                Some(relative) => {
+                    let path = match &self.index {
+                        Some(index) => index.resolve(&relative),
+                        None => PathBuf::from(&relative),
+                    };
+                    self.results.clear();
+                    self.open_path(&path)
+                }
+                None => {
+                    self.say("nothing to open");
+                    Outcome::Redraw
+                }
+            },
+
+            Kind::BufferList => {
+                let picked = self.result;
+                self.results.clear();
+                self.workspace.activate(picked);
+                self.follow_cursor();
+                Outcome::Redraw
+            }
+
             // Questions never reach here; they are answered a key at a time.
             Kind::ReplaceConfirm { .. } | Kind::SaveBeforeQuit => Outcome::Redraw,
         }
@@ -512,7 +678,7 @@ impl Editor {
                 Answer::Yes => {
                     let outcome = self.write_out();
                     // Only leave if it actually got written.
-                    if self.document.is_dirty() {
+                    if self.workspace.active().is_dirty() {
                         outcome
                     } else {
                         self.quitting = true;
@@ -535,6 +701,14 @@ impl Editor {
                 done,
             } => self.continue_replace(find, replace, done, answer),
 
+            Kind::OverwriteChanged => match answer {
+                Answer::Yes => self.write_out_now(),
+                _ => {
+                    self.say("not saved — press ^R to read the file back in");
+                    Outcome::Redraw
+                }
+            },
+
             _ => Outcome::Redraw,
         }
     }
@@ -542,7 +716,7 @@ impl Editor {
     // -- the commands that do work ----------------------------------------
 
     fn begin_quit(&mut self) -> Outcome {
-        if !self.document.is_dirty() {
+        if !self.workspace.active().is_dirty() {
             self.quitting = true;
             return Outcome::Quit;
         }
@@ -550,12 +724,22 @@ impl Editor {
     }
 
     fn write_out(&mut self) -> Outcome {
-        if self.document.path().is_none() {
+        if self.workspace.active().path().is_none() {
             return self.open_prompt(Kind::SaveAs);
         }
-        match self.document.save() {
+        // Never silently overwrite: something else may have written the file
+        // since it was read, and the buffer knows nothing about that change.
+        if self.workspace.active().changed_on_disk() {
+            return self.open_prompt(Kind::OverwriteChanged);
+        }
+        self.write_out_now()
+    }
+
+    /// Write without asking. Only reached once the question is settled.
+    fn write_out_now(&mut self) -> Outcome {
+        match self.workspace.active_mut().save() {
             Ok(()) => {
-                let lines = self.document.buffer.len_lines();
+                let lines = self.workspace.active().buffer.len_lines();
                 self.say(format!("Wrote {lines} lines"));
             }
             Err(e) => self.say(format!("{e}")),
@@ -573,7 +757,10 @@ impl Editor {
                 let lines = loaded.text.lines().count();
                 // Through the same door as typing: nothing bypasses edit.rs.
                 let command = Command::InsertText(loaded.text);
-                self.document.buffer.apply(&command, &self.viewport);
+                self.workspace
+                    .active_mut()
+                    .buffer
+                    .apply(&command, &self.viewport);
                 self.follow_cursor();
                 self.say(format!("Inserted {lines} lines"));
                 Outcome::Redraw
@@ -586,10 +773,10 @@ impl Editor {
     }
 
     fn report_position(&mut self) -> Outcome {
-        let position = self.document.buffer.cursor();
-        let lines = self.document.buffer.len_lines();
-        let characters = self.document.buffer.len_chars();
-        let at = self.document.buffer.cursor_char();
+        let position = self.workspace.active().buffer.cursor();
+        let lines = self.workspace.active().buffer.len_lines();
+        let characters = self.workspace.active().buffer.len_chars();
+        let at = self.workspace.active().buffer.cursor_char();
         // An empty buffer is 0%, not a division by zero.
         let percent = (at * 100).checked_div(characters).unwrap_or(0);
         self.say(format!(
@@ -612,15 +799,15 @@ impl Editor {
         let origin = prompt.origin;
 
         if term.is_empty() {
-            self.document.buffer.clear_selection();
-            let position = self.document.buffer.char_to_position(origin);
-            self.document.buffer.set_cursor(position);
+            self.workspace.active_mut().buffer.clear_selection();
+            let position = self.workspace.active().buffer.char_to_position(origin);
+            self.workspace.active_mut().buffer.set_cursor(position);
             self.follow_cursor();
             return;
         }
 
         let query = Query::new(term).direction(direction);
-        if let Some(found) = search::find(self.document.buffer.text(), &query, origin) {
+        if let Some(found) = search::find(self.workspace.active().buffer.text(), &query, origin) {
             self.show_match(found);
         }
         self.query = Some(query);
@@ -634,8 +821,13 @@ impl Editor {
         let query = query.direction(direction);
         let from = match direction {
             // Start one past the cursor, or the same match is found again.
-            Direction::Forward => self.document.buffer.cursor_char() + 1,
-            Direction::Backward => self.document.buffer.cursor_char().saturating_sub(1),
+            Direction::Forward => self.workspace.active().buffer.cursor_char() + 1,
+            Direction::Backward => self
+                .workspace
+                .active()
+                .buffer
+                .cursor_char()
+                .saturating_sub(1),
         };
         self.query = Some(query);
         self.run_search(from)
@@ -645,7 +837,7 @@ impl Editor {
         let Some(query) = self.query.clone() else {
             return Outcome::Redraw;
         };
-        match search::find(self.document.buffer.text(), &query, from) {
+        match search::find(self.workspace.active().buffer.text(), &query, from) {
             Some(found) => {
                 self.show_match(found);
                 if found.wrapped {
@@ -662,7 +854,10 @@ impl Editor {
 
     /// Put the cursor on a match and select it, so it is visibly highlighted.
     fn show_match(&mut self, found: Match) {
-        self.document.buffer.select_range(found.start, found.end);
+        self.workspace
+            .active_mut()
+            .buffer
+            .select_range(found.start, found.end);
         self.follow_cursor();
     }
 
@@ -670,10 +865,10 @@ impl Editor {
 
     fn begin_replace(&mut self, find: String, replace: String) -> Outcome {
         let query = Query::new(find.clone());
-        let from = self.document.buffer.cursor_char();
+        let from = self.workspace.active().buffer.cursor_char();
         self.query = Some(query.clone());
 
-        match search::find(self.document.buffer.text(), &query, from) {
+        match search::find(self.workspace.active().buffer.text(), &query, from) {
             Some(found) => {
                 self.show_match(found);
                 self.open_prompt(Kind::ReplaceConfirm {
@@ -700,7 +895,7 @@ impl Editor {
 
         let done = match answer {
             Answer::Cancel => {
-                self.document.buffer.clear_selection();
+                self.workspace.active_mut().buffer.clear_selection();
                 self.say(format!("Replaced {done} occurrences"));
                 return Outcome::Redraw;
             }
@@ -709,30 +904,38 @@ impl Editor {
                 // "All" means this one too. The match under the cursor is
                 // already selected, so it is replaced before the loop starts —
                 // otherwise answering `a` on the first match would skip it.
-                self.document
+                self.workspace
+                    .active_mut()
                     .buffer
                     .apply(&Command::InsertText(replace.clone()), &self.viewport);
                 let mut count = done + 1;
-                let mut from = self.document.buffer.cursor_char();
-                while let Some(found) = search::find(self.document.buffer.text(), &query, from) {
+                let mut from = self.workspace.active().buffer.cursor_char();
+                while let Some(found) =
+                    search::find(self.workspace.active().buffer.text(), &query, from)
+                {
                     if found.wrapped {
                         break;
                     }
-                    self.document.buffer.select_range(found.start, found.end);
-                    self.document
+                    self.workspace
+                        .active_mut()
+                        .buffer
+                        .select_range(found.start, found.end);
+                    self.workspace
+                        .active_mut()
                         .buffer
                         .apply(&Command::InsertText(replace.clone()), &self.viewport);
-                    from = self.document.buffer.cursor_char();
+                    from = self.workspace.active().buffer.cursor_char();
                     count += 1;
                 }
-                self.document.buffer.clear_selection();
+                self.workspace.active_mut().buffer.clear_selection();
                 self.follow_cursor();
                 self.say(format!("Replaced {count} occurrences"));
                 return Outcome::Redraw;
             }
 
             Answer::Yes => {
-                self.document
+                self.workspace
+                    .active_mut()
                     .buffer
                     .apply(&Command::InsertText(replace.clone()), &self.viewport);
                 done + 1
@@ -740,17 +943,16 @@ impl Editor {
 
             // Skip this one and look for the next.
             Answer::No => {
-                let at = self.document.buffer.cursor_char();
-                self.document.buffer.clear_selection();
-                self.document
-                    .buffer
-                    .set_cursor(self.document.buffer.char_to_position(at));
+                let at = self.workspace.active().buffer.cursor_char();
+                let position = self.workspace.active().buffer.char_to_position(at);
+                self.workspace.active_mut().buffer.clear_selection();
+                self.workspace.active_mut().buffer.set_cursor(position);
                 done
             }
         };
 
-        let from = self.document.buffer.cursor_char();
-        match search::find(self.document.buffer.text(), &query, from) {
+        let from = self.workspace.active().buffer.cursor_char();
+        match search::find(self.workspace.active().buffer.text(), &query, from) {
             Some(found) if !found.wrapped => {
                 self.show_match(found);
                 self.open_prompt(Kind::ReplaceConfirm {
@@ -760,12 +962,144 @@ impl Editor {
                 })
             }
             _ => {
-                self.document.buffer.clear_selection();
+                self.workspace.active_mut().buffer.clear_selection();
                 self.follow_cursor();
                 self.say(format!("Replaced {done} occurrences"));
                 Outcome::Redraw
             }
         }
+    }
+
+    // -- the folder --------------------------------------------------------
+
+    /// `M-T` from the text area: show the sidebar, or step back into it.
+    ///
+    /// Three states, not two. Opening a file from the tree leaves the sidebar
+    /// showing and moves focus to the file, so the next `M-T` should put focus
+    /// back rather than hide the thing the user is looking at. Closing it is
+    /// `M-T` again from inside — see [`Editor::run_in_tree`].
+    fn toggle_tree(&mut self) -> Outcome {
+        if self.tree.is_some() {
+            self.context = Context::Tree;
+            return Outcome::Redraw;
+        }
+
+        let Some(root) = self.workspace.root().map(Path::to_path_buf) else {
+            self.say("no folder is open — start Aitch with a folder");
+            return Outcome::Redraw;
+        };
+        self.tree = Some(Tree::new(root));
+        self.context = Context::Tree;
+        Outcome::Redraw
+    }
+
+    fn open_quick_open(&mut self) -> Outcome {
+        let Some(root) = self.workspace.root().map(Path::to_path_buf) else {
+            self.say("no folder is open — start Aitch with a folder");
+            return Outcome::Redraw;
+        };
+
+        // Built once. The walk is the slow half and the matching is the fast
+        // half, and only the fast half runs on a keystroke.
+        if self.index.is_none() {
+            self.index = Some(PathIndex::build(&root));
+        }
+
+        let outcome = self.open_prompt(Kind::QuickOpen);
+        self.refresh_results();
+        outcome
+    }
+
+    fn open_buffer_list(&mut self) -> Outcome {
+        let outcome = self.open_prompt(Kind::BufferList);
+        self.result = self.workspace.active_index();
+        self.refresh_results();
+        outcome
+    }
+
+    /// Recompute the list above the prompt line for whatever is being asked.
+    fn refresh_results(&mut self) {
+        let Some(prompt) = &self.prompt else {
+            self.results.clear();
+            return;
+        };
+        let query = prompt.input().to_string();
+
+        self.results = match prompt.kind {
+            Kind::QuickOpen => match &self.index {
+                Some(index) => index.search(&query, RESULT_LIMIT),
+                None => Vec::new(),
+            },
+            Kind::BufferList => self.workspace.listing(),
+            _ => Vec::new(),
+        };
+        self.result = self.result.min(self.results.len().saturating_sub(1));
+    }
+
+    fn cycle_buffer(&mut self, forward: bool) -> Outcome {
+        let moved = if forward {
+            self.workspace.next_buffer()
+        } else {
+            self.workspace.previous_buffer()
+        };
+        if !moved {
+            self.say("only one buffer is open");
+            return Outcome::Redraw;
+        }
+        self.follow_cursor();
+        let name = self.workspace.active().display_name();
+        self.say(name);
+        Outcome::Redraw
+    }
+
+    fn close_buffer(&mut self) -> Outcome {
+        if self.workspace.active().is_dirty() {
+            self.say("this buffer has unsaved changes");
+            return Outcome::Redraw;
+        }
+        if !self.workspace.close_active() {
+            // The last buffer: closing it means leaving.
+            return self.begin_quit();
+        }
+        self.follow_cursor();
+        Outcome::Redraw
+    }
+
+    /// Open a file into the workspace and show it.
+    fn open_path(&mut self, path: &Path) -> Outcome {
+        match self.workspace.open(path) {
+            Ok(()) => {
+                self.context = Context::Editor;
+                self.close_prompt();
+                self.follow_cursor();
+                let name = self.workspace.active().display_name();
+                self.say(name);
+                Outcome::Redraw
+            }
+            Err(e) => {
+                self.say(format!("{e}"));
+                Outcome::Redraw
+            }
+        }
+    }
+
+    /// Something in the folder changed. Catch the tree up and say so if the
+    /// file being edited is one of the things that moved.
+    ///
+    /// Never reloads: unsaved work is not ours to throw away, and the save
+    /// path asks before overwriting. This only tells the truth about what is
+    /// on screen.
+    pub fn folder_changed(&mut self) -> Outcome {
+        if let Some(tree) = self.tree.as_mut() {
+            tree.refresh();
+        }
+        // The quick-open index is now stale too; rebuild it on next use.
+        self.index = None;
+
+        if self.workspace.active().changed_on_disk() {
+            self.say("this file has changed on disk since you opened it");
+        }
+        Outcome::Redraw
     }
 
     // -- help --------------------------------------------------------------
@@ -783,7 +1117,10 @@ impl Editor {
     // -- housekeeping ------------------------------------------------------
 
     fn follow_cursor(&mut self) {
-        self.document.buffer.follow_cursor(&mut self.viewport);
+        self.workspace
+            .active_mut()
+            .buffer
+            .follow_cursor(&mut self.viewport);
     }
 }
 

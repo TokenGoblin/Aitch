@@ -432,10 +432,18 @@ priority = 100
 
 [[binding]]
 context = "tree"
-chords = ["^B", "Escape"]
+chords = ["^B"]
 command = "toggle-tree"
 label = "Close Tree"
 priority = 99
+
+# Escape hands the keys back without hiding the sidebar; ^B puts it away.
+[[binding]]
+context = "tree"
+chords = ["Escape", "^C"]
+command = "prompt-cancel"
+label = "Back"
+priority = 98
 
 [[binding]]
 context = "tree"

@@ -8,9 +8,9 @@ context-sensitive shortcuts, always visible, generated from the active keymap
 rather than hardcoded. Prompts happen on a line above the footer. No modal
 dialogs, no floating windows.
 
-**Status: Phase 3.** It looks and behaves like nano: two footer rows, a status
-line, and prompts on the line above the footer. Folder mode is Phase 4, syntax
-highlighting Phase 5. See [`PLAN.md`](PLAN.md).
+**Status: Phase 4.** It looks and behaves like nano, and opens folders: a file
+tree, fuzzy quick open, and several buffers at once. Syntax highlighting is
+Phase 5, project-wide search Phase 6. See [`PLAN.md`](PLAN.md).
 
 ## Build and run
 
@@ -19,6 +19,7 @@ Needs a stable Rust toolchain.
 ```
 cargo test --workspace
 cargo run -p aitch -- some-file.txt
+cargo run -p aitch -- some/folder
 ```
 
 Type. Arrow keys, Home/End, PgUp/PgDn, Ctrl+arrows for words, Ctrl+Home/End
@@ -31,6 +32,11 @@ confirmation; `^_` goes to a line; `^G` opens help. Everything a nano user
 already knows is on the footer, and the footer is generated from the keymap —
 so it stays true in both profiles and in one you write yourself.
 
+Open a folder and `M-T` shows the tree, `^T` finds a file by typing part of
+its name, and `M-,` / `M-.` / `M-B` move between open buffers. There is no tab
+bar, deliberately — the buffer list lives on the prompt line with everything
+else. `.gitignore` is respected throughout.
+
 Files keep the encoding and line endings they arrived with. Open a UTF-16 file
 with CRLF endings, change one word, save, and only that word differs.
 
@@ -38,7 +44,8 @@ with CRLF endings, change one word, save, and only that word differs.
 
 ```
 crates/
-  aitch-core/     rope, edits, undo, search, keymap, footer, session — no GUI deps
+  aitch-core/     rope, edits, undo, search, keymap, footer, folder, session
+                  — no GUI dependencies
   aitch-ui/       winit + wgpu + cosmic-text
   aitch-harness/  headless driver: feed chords, assert on state
   aitch/          the binary: argument parsing and wiring

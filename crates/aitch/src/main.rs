@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use aitch_core::Document;
+use aitch_core::{Document, Workspace};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -14,14 +14,14 @@ const USAGE: &str = "\
 Aitch — a GUI text editor with nano's interaction model
 
 Usage:
-    aitch [OPTIONS] [FILE]
+    aitch [OPTIONS] [FILE|FOLDER]
 
 Options:
     -h, --help       Show this message
     -V, --version    Show the version
 
 A FILE that does not exist yet opens as an empty buffer under that name.
-Folder mode arrives in Phase 4; see PLAN.md.
+A FOLDER opens a workspace: M-T shows the tree, ^T finds a file by name.
 ";
 
 fn main() -> ExitCode {
@@ -53,21 +53,41 @@ fn main() -> ExitCode {
         }
     }
 
-    let document = match &path {
+    let workspace = match &path {
+        // A folder opens a workspace rather than a buffer.
+        Some(path) if path.is_dir() => match path.canonicalize() {
+            Ok(root) => Workspace::with_root(root),
+            Err(e) => {
+                eprintln!("aitch: {}: {e}", path.display());
+                return ExitCode::FAILURE;
+            }
+        },
         // A name that is not on disk yet is a new file, not an error — that is
         // how every editor is used to start one.
-        Some(path) if !path.exists() => Document::new_at(path),
+        Some(path) if !path.exists() => Workspace::new(Document::new_at(path)),
         Some(path) => match Document::open(path) {
-            Ok(document) => document,
+            Ok(document) => {
+                let mut workspace = Workspace::new(document);
+                // Opening a file inside a project still wants the project, so
+                // quick open and the tree have somewhere to look.
+                if let Some(parent) = path
+                    .canonicalize()
+                    .ok()
+                    .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+                {
+                    workspace.set_root(parent);
+                }
+                workspace
+            }
             Err(e) => {
                 eprintln!("aitch: {e}");
                 return ExitCode::FAILURE;
             }
         },
-        None => Document::blank(),
+        None => Workspace::new(Document::blank()),
     };
 
-    if let Err(e) = aitch_ui::run(document) {
+    if let Err(e) = aitch_ui::run(workspace) {
         eprintln!("aitch: {e}");
         return ExitCode::FAILURE;
     }

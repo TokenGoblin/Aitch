@@ -4,6 +4,55 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Phase 4 — Folder mode
+
+nano has no equivalent, so this phase is invention. Kept keyboard-first and
+quiet, and with no tab bar: PLAN.md §5 settles that, and the buffer list goes
+on the prompt line where every other list already is.
+
+Added:
+
+- `aitch some/folder` opens a workspace. `M-T` shows the sidebar and gives it
+  the keys; `M-T` again from inside puts it away, while `Escape` just hands
+  the keys back. Folders fold open and shut with Enter; files open.
+- `^T` quick open: fuzzy path matching over the whole folder, with the results
+  listed above the prompt line. The arrows move through that list rather than
+  through past answers, because a list on screen is what arrows are obviously
+  for.
+- Several buffers at once: `M-,` and `M-.` cycle, `M-B` lists them on the
+  prompt line with a marker on the ones that need saving.
+- `.gitignore` handling from ripgrep's `ignore` crate, so `target/` and its
+  like never appear in the tree or in quick open.
+- A `notify` watcher on the folder, debounced, so the sidebar keeps up with a
+  build or a branch switch without being asked.
+- **Never silently overwrite.** A document remembers when it last read or wrote
+  its file. Saving over a file that something else changed asks first, and a
+  file that has been deleted counts as changed — writing it back would recreate
+  something someone removed on purpose.
+
+Measured:
+
+| | measured | PLAN.md §5 budget |
+|---|---|---|
+| Open a folder (`Tree::new`) | 1.7 ms | sidebar under 500 ms ✓ |
+| Quick-open filter, 80k paths | 2.4–7.9 ms | no perceptible lag ✓ |
+| Index 35k files | 128 ms | one-off, on first `^T` |
+| Idle CPU with a watcher running | 0.000 s over 5 s | 0% ✓ |
+
+The tree reads one directory per expansion rather than walking the whole
+folder, which is why its cost does not depend on the size of the checkout.
+The index walk started at 3.6 seconds single-threaded; ripgrep's parallel
+walker took it to 128 ms for the same 34,725 files.
+
+Not done:
+
+- Reload-on-change is a report, not a prompt: the status line says the file
+  moved, and `^O` asks before overwriting. Offering to re-read it needs a
+  question the prompt line can ask, which is a small addition rather than a
+  missing guarantee — nothing is lost either way.
+- Double-click word and triple-click line selection, still owed from Phase 2.
+- Search is literal, not regex; that arrives with Phase 6.
+
 ### Phase 3 — The nano personality
 
 This is the phase that makes it this editor rather than a generic one.

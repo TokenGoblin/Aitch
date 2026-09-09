@@ -18,8 +18,11 @@ pub mod footer;
 pub mod history;
 pub mod keymap;
 pub mod line_ending;
+pub mod project;
 pub mod prompt;
 pub mod search;
+pub mod watcher;
+pub mod workspace;
 
 pub use buffer::{Applied, Buffer, Position, Viewport};
 pub use command::Command;
@@ -35,5 +38,8 @@ pub use keymap::{
     NamedKey, MODERN_PROFILE, NANO_PROFILE,
 };
 pub use line_ending::LineEnding;
+pub use project::{PathIndex, Tree};
 pub use prompt::{Answer, Histories, Prompt};
 pub use search::{Direction, Match, Query};
+pub use watcher::Watcher;
+pub use workspace::Workspace;

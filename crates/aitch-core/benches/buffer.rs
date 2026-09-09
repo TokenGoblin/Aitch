@@ -7,7 +7,7 @@
 
 use std::hint::black_box;
 
-use aitch_core::{Buffer, Command, Position, Viewport};
+use aitch_core::{Buffer, Command, PathIndex, Position, Viewport};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 /// A log-shaped file of roughly `megabytes` MB.
@@ -120,5 +120,42 @@ fn movement(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, load, visible_window, movement);
+/// A path list the shape of a large checkout, without needing one on disk.
+fn synthetic_paths(count: usize) -> Vec<String> {
+    let areas = ["drivers", "arch", "kernel", "fs", "net", "sound", "tools"];
+    let kinds = ["core", "init", "probe", "ioctl", "debug", "table", "queue"];
+    (0..count)
+        .map(|i| {
+            format!(
+                "{}/{}{}/{}_{}.c",
+                areas[i % areas.len()],
+                kinds[i % kinds.len()],
+                i % 400,
+                kinds[(i / 7) % kinds.len()],
+                i
+            )
+        })
+        .collect()
+}
+
+/// PLAN.md Phase 4: quick open filters 80k paths with no perceptible lag.
+/// The walk that builds the index is separate and happens once; this is the
+/// half that runs on every keystroke.
+fn quick_open(c: &mut Criterion) {
+    let index = PathIndex::from_paths(
+        std::path::PathBuf::from("/project"),
+        synthetic_paths(80_000),
+    );
+
+    let mut group = c.benchmark_group("quick_open");
+    group.throughput(Throughput::Elements(index.len() as u64));
+    for query in ["d", "dr", "drv", "driverscore", "netqueue42"] {
+        group.bench_with_input(BenchmarkId::from_parameter(query), query, |b, query| {
+            b.iter(|| black_box(index.search(black_box(query), 50).len()))
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, load, visible_window, movement, quick_open);
 criterion_main!(benches);

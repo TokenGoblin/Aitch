@@ -60,6 +60,32 @@ impl Harness {
         self
     }
 
+    /// Start from a folder, as `aitch some/folder` does.
+    pub fn with_workspace(self, workspace: aitch_core::Workspace) -> Harness {
+        let keymap = self.editor.keymap().clone();
+        let mut harness = Harness {
+            editor: Editor::with_workspace(workspace),
+            commands: self.commands,
+            unbound: self.unbound,
+            outcomes: self.outcomes,
+        };
+        harness.editor.set_keymap(keymap);
+        harness
+    }
+
+    /// The sidebar rows as they would read, when it is showing.
+    pub fn tree_rows(&self) -> Vec<String> {
+        self.editor
+            .tree()
+            .map(|tree| tree.rows().iter().map(|row| row.label()).collect())
+            .unwrap_or_default()
+    }
+
+    /// The list above the prompt line: quick-open hits or open buffers.
+    pub fn results(&self) -> &[String] {
+        self.editor.results()
+    }
+
     /// Set the window height in lines, since paging depends on it.
     pub fn with_height(mut self, lines: usize) -> Harness {
         self.editor.viewport_mut().set_height_lines(lines);

@@ -6,6 +6,7 @@
 //! round-trip across two crates. Phase 4's `workspace.rs` owns a set of these.
 
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use crate::buffer::Buffer;
 use crate::fileio::{self, Encoding, FileError};
@@ -18,6 +19,12 @@ pub struct Document {
     /// How the file was encoded when read, so it can be written back the same
     /// way. A new file gets UTF-8 without a BOM.
     encoding: Encoding,
+    /// When the file was last read or written by us.
+    ///
+    /// Compared against the file's current timestamp before saving, so that
+    /// something else changing the file under us is noticed rather than
+    /// quietly overwritten. PLAN.md Phase 4: never silently overwrite.
+    seen: Option<SystemTime>,
 }
 
 impl Document {
@@ -27,6 +34,7 @@ impl Document {
             buffer: Buffer::new(),
             path: None,
             encoding: Encoding::UTF8,
+            seen: None,
         }
     }
 
@@ -39,6 +47,7 @@ impl Document {
             buffer,
             path: Some(path.to_path_buf()),
             encoding: loaded.encoding,
+            seen: modified_at(path),
         })
     }
 
@@ -48,6 +57,7 @@ impl Document {
             buffer: Buffer::new(),
             path: Some(path.to_path_buf()),
             encoding: Encoding::UTF8,
+            seen: None,
         }
     }
 
@@ -57,6 +67,35 @@ impl Document {
 
     pub fn set_path(&mut self, path: PathBuf) {
         self.path = Some(path);
+        // A different file entirely; what we had seen says nothing about it.
+        self.seen = None;
+    }
+
+    /// Whether the file has been written by something else since we read it.
+    ///
+    /// A document with no path, or one whose file has never been read, cannot
+    /// be stale. A file that has since been deleted counts as changed: writing
+    /// it back would silently recreate something someone removed on purpose.
+    pub fn changed_on_disk(&self) -> bool {
+        let Some(path) = &self.path else { return false };
+        let Some(seen) = self.seen else { return false };
+        match modified_at(path) {
+            Some(now) => now > seen,
+            None => true,
+        }
+    }
+
+    /// Re-read the file, throwing away unsaved changes.
+    pub fn reload(&mut self) -> Result<(), FileError> {
+        let Some(path) = self.path.clone() else {
+            return Err(FileError::NoPath);
+        };
+        let loaded = fileio::load(&path)?;
+        self.buffer = Buffer::from_str(&loaded.text);
+        self.buffer.set_line_ending(loaded.line_ending);
+        self.encoding = loaded.encoding;
+        self.seen = modified_at(&path);
+        Ok(())
     }
 
     pub fn encoding(&self) -> Encoding {
@@ -87,6 +126,7 @@ impl Document {
         let path = self.path.clone().ok_or(FileError::NoPath)?;
         fileio::save(&path, &self.buffer.text().to_string(), self.encoding)?;
         self.buffer.mark_saved();
+        self.seen = modified_at(&path);
         Ok(())
     }
 }
@@ -95,6 +135,11 @@ impl Default for Document {
     fn default() -> Document {
         Document::blank()
     }
+}
+
+/// A file's modification time, or `None` if it cannot be read.
+fn modified_at(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
 }
 
 #[cfg(test)]
@@ -134,6 +179,85 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"Xalpha\r\nbeta\r\n");
 
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_file_changed_by_something_else_is_noticed() {
+        let path = scratch("changed-elsewhere.txt");
+        std::fs::write(
+            &path,
+            b"original
+",
+        )
+        .unwrap();
+
+        let mut doc = Document::open(&path).unwrap();
+        assert!(!doc.changed_on_disk());
+
+        // Something else writes it. The timestamp has to move for the check to
+        // mean anything, and filesystems have coarse clocks.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(
+            &path,
+            b"changed by someone else
+",
+        )
+        .unwrap();
+
+        assert!(doc.changed_on_disk(), "the file moved under us");
+
+        // Reloading takes the new contents and settles the question.
+        doc.reload().unwrap();
+        assert_eq!(
+            doc.buffer.text().to_string(),
+            "changed by someone else
+"
+        );
+        assert!(!doc.changed_on_disk());
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn saving_settles_the_question_again() {
+        let path = scratch("save-settles.txt");
+        std::fs::write(
+            &path,
+            b"original
+",
+        )
+        .unwrap();
+
+        let mut doc = Document::open(&path).unwrap();
+        doc.buffer.insert("X");
+        doc.save().unwrap();
+
+        assert!(!doc.changed_on_disk(), "we are the ones who changed it");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_deleted_file_counts_as_changed() {
+        let path = scratch("deleted.txt");
+        std::fs::write(
+            &path,
+            b"here for now
+",
+        )
+        .unwrap();
+        let doc = Document::open(&path).unwrap();
+
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            doc.changed_on_disk(),
+            "writing it back would recreate what someone deleted"
+        );
+    }
+
+    #[test]
+    fn a_buffer_with_no_file_is_never_stale() {
+        let doc = Document::blank();
+        assert!(!doc.changed_on_disk());
     }
 
     #[test]
