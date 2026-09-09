@@ -24,6 +24,23 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Run a native command without its stderr being mistaken for a failure.
+# PowerShell turns a native program's stderr into error records, and under
+# ErrorActionPreference = Stop that aborts the script even when the program
+# succeeded -- cargo and wix both write progress there. Only the exit code
+# says whether it worked.
+function Invoke-Native {
+    param([scriptblock] $Command, [string] $What)
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Command
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    if ($LASTEXITCODE -ne 0) { throw "$What failed ($LASTEXITCODE)" }
+}
+
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $outputDir = Join-Path $root 'target\wix'
 $binary = Join-Path $root 'target\release\aitch.exe'
@@ -60,8 +77,10 @@ if (-not $SkipBuild) {
     $previous = $env:CARGO_ENCODED_RUSTFLAGS
     try {
         $env:CARGO_ENCODED_RUSTFLAGS = $encoded
-        cargo build --release -p aitch
-        if ($LASTEXITCODE -ne 0) { throw "cargo build failed ($LASTEXITCODE)" }
+        # cargo writes its progress to stderr, and with ErrorActionPreference
+        # set to Stop that is a terminating error the moment this script's
+        # output is piped anywhere. The exit code is the thing to believe.
+        Invoke-Native { cargo build --release -p aitch } 'cargo build'
     } finally {
         $env:CARGO_ENCODED_RUSTFLAGS = $previous
         Pop-Location
@@ -113,16 +132,16 @@ foreach ($doc in @('README.md', 'LICENSE', 'docs\guide.md', 'docs\config.md', 'd
 
 $msi = Join-Path $outputDir "aitch-$Version-x86_64.msi"
 
-wix build (Join-Path $PSScriptRoot 'aitch.wxs') `
-    -define "Version=$Version" `
-    -define "BinaryPath=$binary" `
-    -define "DocsPath=$root" `
-    -define "LicenseRtf=$licenseRtf" `
-    -ext WixToolset.UI.wixext `
-    -arch x64 `
-    -out $msi
-
-if ($LASTEXITCODE -ne 0) { throw "wix build failed ($LASTEXITCODE)" }
+Invoke-Native {
+    wix build (Join-Path $PSScriptRoot 'aitch.wxs') `
+        -define "Version=$Version" `
+        -define "BinaryPath=$binary" `
+        -define "DocsPath=$root" `
+        -define "LicenseRtf=$licenseRtf" `
+        -ext WixToolset.UI.wixext `
+        -arch x64 `
+        -out $msi
+} 'wix build' 
 
 $size = [math]::Round((Get-Item $msi).Length / 1MB, 1)
 Write-Host "Built $msi ($size MB)"
