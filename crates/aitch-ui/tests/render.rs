@@ -11,6 +11,8 @@
 //! missing adapter into a failure. Without that, coverage can quietly vanish
 //! from a platform and nobody finds out.
 
+use std::sync::OnceLock;
+
 use aitch_core::{Buffer, Position};
 use aitch_ui::render::atlas::Atlas;
 use aitch_ui::render::quads::{Instances, QuadPipeline};
@@ -80,8 +82,21 @@ fn required_from(value: Option<&str>) -> bool {
 ///
 /// Panics instead when `AITCH_REQUIRE_GPU` is set, so CI cannot pass by
 /// skipping every rendering test.
-fn gpu() -> Option<Gpu> {
-    match adapter_and_device() {
+/// One device for the whole binary, not one per test.
+///
+/// libtest runs these in parallel, so a device each meant nine wgpu instances
+/// and nine devices coming up at once. On a GitHub runner, whose adapter is a
+/// software one, that intermittently took the whole test process down with an
+/// access violation inside the graphics stack — a crash rather than a
+/// failure, so nothing said which test or why. It failed roughly one release
+/// in three, and blocked one.
+///
+/// Sharing costs nothing here: every test only draws offscreen and reads the
+/// pixels back, so there is no state on the device worth isolating.
+fn gpu() -> Option<&'static Gpu> {
+    static SHARED: OnceLock<Result<Gpu, NoGpu>> = OnceLock::new();
+
+    match SHARED.get_or_init(adapter_and_device) {
         Ok(gpu) => Some(gpu),
         Err(why) if gpu_is_required() => {
             panic!("{why}, and AITCH_REQUIRE_GPU is set")
@@ -257,7 +272,7 @@ fn text_actually_reaches_the_framebuffer() {
 
     let theme = Theme::dark();
     let buffer = Buffer::from_str("hello world\nsecond line\nthird line\n");
-    let pixels = draw(&gpu, &buffer, &theme);
+    let pixels = draw(gpu, &buffer, &theme);
 
     let (count, rows) = lit_pixels(&pixels);
     assert!(
@@ -280,7 +295,7 @@ fn an_empty_buffer_draws_only_the_cursor() {
 
     let theme = Theme::dark();
     let buffer = Buffer::new();
-    let pixels = draw(&gpu, &buffer, &theme);
+    let pixels = draw(gpu, &buffer, &theme);
 
     let (count, rows) = lit_pixels(&pixels);
     assert!(count > 0, "the cursor should be visible in an empty buffer");
@@ -301,9 +316,9 @@ fn the_cursor_moves_with_the_buffer() {
     let theme = Theme::dark();
     let mut buffer = Buffer::from_str("\n\n\n\n");
 
-    let top = lit_pixels(&draw(&gpu, &buffer, &theme)).1;
+    let top = lit_pixels(&draw(gpu, &buffer, &theme)).1;
     buffer.set_cursor(Position::new(3, 0));
-    let moved = lit_pixels(&draw(&gpu, &buffer, &theme)).1;
+    let moved = lit_pixels(&draw(gpu, &buffer, &theme)).1;
 
     assert!(
         moved.first() > top.first(),
@@ -318,12 +333,12 @@ fn a_selection_is_drawn_behind_the_text() {
     let theme = Theme::dark();
     let text = "hello world\nsecond line\n";
 
-    let plain = draw(&gpu, &Buffer::from_str(text), &theme);
+    let plain = draw(gpu, &Buffer::from_str(text), &theme);
     let (plain_lit, _) = lit_pixels(&plain);
 
     let mut selected = Buffer::from_str(text);
     selected.select_all();
-    let highlighted = draw(&gpu, &selected, &theme);
+    let highlighted = draw(gpu, &selected, &theme);
     let (selected_lit, rows) = lit_pixels(&highlighted);
 
     // The selection is a translucent band behind the glyphs, so a great many
@@ -367,7 +382,7 @@ fn the_first_selected_line_highlights_from_its_start() {
     for _ in 0..20 {
         buffer.move_right();
     }
-    let pixels = draw(&gpu, &buffer, &theme);
+    let pixels = draw(gpu, &buffer, &theme);
 
     let (_, rows) = lit_pixels(&pixels);
     let top = *rows.first().expect("something was drawn");
@@ -431,8 +446,8 @@ fn tab_width_changes_how_wide_a_tab_is_drawn() {
     let theme = Theme::dark();
     let buffer = Buffer::from_str("\tX\n");
 
-    let narrow = draw_with_tab_width(&gpu, &buffer, &theme, 2);
-    let wide = draw_with_tab_width(&gpu, &buffer, &theme, 8);
+    let narrow = draw_with_tab_width(gpu, &buffer, &theme, 2);
+    let wide = draw_with_tab_width(gpu, &buffer, &theme, 8);
 
     // The rightmost ink, not the leftmost: a cursor block sits at column 0 in
     // both frames and would make the two look identical.
@@ -502,8 +517,8 @@ fn the_footer_reaches_the_framebuffer() {
     document.buffer = Buffer::from_str("some text\n");
     let editor = aitch_core::Editor::new(document);
 
-    let pixels = draw_screen(&gpu, &editor, &theme);
-    let chrome = chrome_rows(&gpu);
+    let pixels = draw_screen(gpu, &editor, &theme);
+    let chrome = chrome_rows(gpu);
 
     // The footer is drawn on a bar with reversed chords, so the bottom rows
     // carry a great deal more ink than the mostly empty text area above them.
@@ -535,14 +550,14 @@ fn a_prompt_takes_over_the_status_line_without_a_third_footer_row() {
     let mut editor = aitch_core::Editor::new(document);
     editor.viewport_mut().set_height_lines(10);
 
-    let before = draw_screen(&gpu, &editor, &theme);
+    let before = draw_screen(gpu, &editor, &theme);
 
     // Open a search and type into it.
     editor.run(&aitch_core::Command::WhereIs);
     for c in "beta".chars() {
         editor.run(&aitch_core::Command::InsertText(c.to_string()));
     }
-    let after = draw_screen(&gpu, &editor, &theme);
+    let after = draw_screen(gpu, &editor, &theme);
 
     assert!(
         lit_pixels(&before).0 != lit_pixels(&after).0,
@@ -551,7 +566,7 @@ fn a_prompt_takes_over_the_status_line_without_a_third_footer_row() {
 
     // The chrome is still exactly three rows: the prompt replaced the status
     // line rather than pushing the footer down or growing a third row.
-    let chrome = chrome_rows(&gpu);
+    let chrome = chrome_rows(gpu);
     let rows_with_ink = chrome.clone().filter_map(|y| lit_span(&after, y)).count();
     let before_rows = chrome.filter_map(|y| lit_span(&before, y)).count();
     assert!(
