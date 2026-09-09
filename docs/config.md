@@ -15,7 +15,9 @@ an editor that will not start is worse than an editor with the wrong theme.
 
 `aitch --config path/to/other.toml` reads somewhere else instead.
 `aitch --no-config` ignores it entirely, which is the thing to try first when
-something behaves oddly.
+something behaves oddly. A `--config` path that is not there is reported —
+unlike the default path, where having no config file is the normal state of a
+fresh install.
 
 Saving the file applies it immediately. There is no reload command and no
 restart, apart from the font — see below.
@@ -30,7 +32,8 @@ theme = "dark"
 # same format as the shipped ones: see docs/keymap.md.
 keymap = "nano"
 
-# What the Tab key puts in, and how wide a tab is drawn.
+# What the Tab key puts in, and how wide a tab is drawn — both, so a file
+# that already contains tabs lines up the way you set it to.
 tab_width = 4
 expand_tabs = false
 
@@ -45,6 +48,8 @@ ignore = ["target", "node_modules", "*.min.js"]
 
 [font]
 # A family installed on this machine. Omitted means the system monospace.
+# The size is held between 4 and 200: a window that will not open is the
+# worst way to find out about a typo.
 family = "JetBrains Mono"
 size = 14.0
 ```
@@ -80,7 +85,8 @@ aitch [OPTIONS] [+LINE[:COLUMN]] [FILE|FOLDER]
 
 `aitch +42 notes.txt` opens at line 42, `+42:8` at line 42, column 8 — the
 same as vi and every editor since. Text piped in becomes an unnamed buffer,
-so `git log | aitch` works.
+so `git log | aitch` works; naming a file wins over a pipe, so
+`echo hi | aitch notes.txt` opens `notes.txt`.
 
 Aitch runs until its window closes, which is what `$EDITOR` requires:
 
@@ -107,11 +113,18 @@ quitting deliberately is their whole purpose.
 If the editor did not get to do that, opening the same file again asks:
 
 ```
-Unsaved work found for notes.txt (1843 bytes, 2026-09-08 14:02). Restore it?
+Unsaved work found for notes.txt (1843 bytes, 2026-09-08 14:02:37 UTC). Restore it?
 ```
 
 Yes puts it back as a single undoable edit, left unsaved so you can compare
-before committing to it. No leaves the file as it is on disk.
+before committing to it. No deletes it. **Esc does neither** — the file stays
+where it is and you are asked again next time, because "let me think about
+it" must never be read as "throw it away".
+
+Work typed into a buffer that has no file — `git log | aitch`, or a new file
+you have not saved yet — is protected the same way, and offered back into an
+empty unnamed buffer. That is the case where the recovery file really is the
+only copy.
 
 Recovery files live beside the session, under `%LOCALAPPDATA%\aitch` or
 `$XDG_STATE_HOME/aitch`. A recovery file whose buffer has not been reopened is

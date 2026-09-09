@@ -116,9 +116,14 @@ fn adapter_and_device() -> Result<Gpu, NoGpu> {
 
 /// Draw `buffer` offscreen and return the frame as RGBA rows.
 fn draw(gpu: &Gpu, buffer: &Buffer, theme: &Theme) -> Vec<u8> {
+    draw_with_tab_width(gpu, buffer, theme, 4)
+}
+
+/// The same, drawing a tab as `tab_width` columns wide.
+fn draw_with_tab_width(gpu: &Gpu, buffer: &Buffer, theme: &Theme, tab_width: usize) -> Vec<u8> {
     let mut atlas = Atlas::new(&gpu.device, &gpu.queue, 1024);
     let mut pipeline = QuadPipeline::new(&gpu.device, FORMAT, atlas.bind_group_layout());
-    let mut text = TextRenderer::new(14.0, 1.0);
+    let mut text = TextRenderer::with_family(14.0, 1.0, None, tab_width);
     let mut instances = Instances::default();
 
     text.prepare(buffer, 0, (WIDTH as f32, HEIGHT as f32), 0);
@@ -415,6 +420,37 @@ fn the_gpu_requirement_reads_its_value() {
     ] {
         assert_eq!(required_from(value), expected, "for {value:?}");
     }
+}
+
+#[test]
+fn tab_width_changes_how_wide_a_tab_is_drawn() {
+    // `tab_width` was only ever read to decide what the Tab key inserts, so a
+    // file that already contains tabs ignored the setting entirely and drew
+    // them at the shaper's default of eight.
+    let Some(gpu) = gpu() else { return };
+    let theme = Theme::dark();
+    let buffer = Buffer::from_str("\tX\n");
+
+    let narrow = draw_with_tab_width(&gpu, &buffer, &theme, 2);
+    let wide = draw_with_tab_width(&gpu, &buffer, &theme, 8);
+
+    // The rightmost ink, not the leftmost: a cursor block sits at column 0 in
+    // both frames and would make the two look identical.
+    let rightmost = |pixels: &[u8]| {
+        (0..HEIGHT as usize)
+            .filter_map(|y| lit_span(pixels, y))
+            .map(|(_, last)| last)
+            .max()
+            .expect("the X has to land somewhere")
+    };
+
+    let narrow_x = rightmost(&narrow);
+    let wide_x = rightmost(&wide);
+    assert!(
+        wide_x > narrow_x,
+        "an eight-column tab must push the X further right than a two-column \
+         one: {wide_x} vs {narrow_x}"
+    );
 }
 
 // -- the chrome: status line, prompt line, footer ---------------------------

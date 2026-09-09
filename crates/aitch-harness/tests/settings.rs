@@ -139,6 +139,15 @@ fn a_keymap_that_does_not_exist_leaves_the_keys_working() {
         "and says so: {}",
         harness.status()
     );
+    // And hands the complaint back, so a live reload prints it rather than
+    // printing "settings reloaded" over the top of it.
+    let complaint = harness
+        .editor_mut()
+        .apply_config(scratch.config("keymap = \"still-not-a-keymap\"\n"));
+    assert!(
+        complaint.is_some_and(|c| c.contains("keymap")),
+        "the caller is told, not just the status line"
+    );
     harness.type_text("still typing");
     assert_eq!(harness.text(), "still typing");
 }
@@ -182,17 +191,27 @@ fn project(name: &str, rules: &str) -> (Scratch, Harness) {
     (scratch, harness)
 }
 
-/// Wait for the project search to deliver something and settle.
+/// Wait for the project search to deliver everything it is going to.
+///
+/// Not just the first hit: the walker runs on several threads, so a test that
+/// counted results the moment one arrived would race the rest of them.
 fn settle(harness: &mut Harness) {
     let start = Instant::now();
+    let mut steady = 0;
+    let mut last = usize::MAX;
     while start.elapsed() < Duration::from_secs(10) {
         harness.editor_mut().poll_search();
-        if !harness.results().is_empty() {
-            std::thread::sleep(Duration::from_millis(60));
-            harness.editor_mut().poll_search();
-            return;
+        let now = harness.results().len();
+        if now > 0 && now == last {
+            steady += 1;
+            if steady == 3 {
+                return;
+            }
+        } else {
+            steady = 0;
         }
-        std::thread::sleep(Duration::from_millis(5));
+        last = now;
+        std::thread::sleep(Duration::from_millis(30));
     }
 }
 
@@ -277,6 +296,40 @@ fn an_excluded_folder_cannot_have_one_file_pulled_back_out() {
 }
 
 #[test]
+fn an_ignore_rule_with_a_path_in_it_means_the_same_thing_everywhere() {
+    // The rules are anchored at the project root. Anchoring them at whatever
+    // folder is being expanded made `src/generated` resolve to
+    // `src/src/generated` in the tree and match nothing.
+    let scratch = Scratch::new("ignore-anchor");
+    scratch.file("src/keep.rs", "fn main() {}\n");
+    scratch.file("src/generated/machine.rs", "// generated\n");
+
+    let config = scratch.config("ignore = [\"src/generated\"]\n");
+    let mut harness = Harness::nano().with_workspace(Workspace::with_root(scratch.0.clone()));
+    harness.editor_mut().apply_config(config);
+
+    // Quick open walks from the root.
+    harness.feed("^T").unwrap();
+    harness.type_text("machine");
+    assert!(
+        harness.results().is_empty(),
+        "the index leaves it out: {:?}",
+        harness.results()
+    );
+    harness.feed("^C").unwrap();
+
+    // The tree walks one folder at a time, and must agree.
+    harness.feed("M-T").unwrap();
+    harness.feed("Enter").unwrap();
+    let rows = harness.tree_rows().join(" ");
+    assert!(rows.contains("keep.rs"), "src is expanded: {rows}");
+    assert!(
+        !rows.contains("generated"),
+        "and agrees with the index: {rows}"
+    );
+}
+
+#[test]
 fn a_nonsense_ignore_rule_does_not_take_the_tree_with_it() {
     let (_scratch, mut harness) = project("ignore-bad", "ignore = [\"[\"]\n");
     harness.feed("M-T").unwrap();
@@ -304,6 +357,41 @@ fn a_session_records_what_is_open_and_where_the_cursor_was() {
     assert_eq!(session.active, 1, "the one being looked at");
     assert_eq!(session.files[1].line, 1);
     assert_eq!(session.files[1].column, 2);
+}
+
+#[test]
+fn the_active_buffer_survives_a_file_going_missing() {
+    // `session.active` indexes the saved list; anything deleted since is
+    // skipped, so the two stop agreeing and the wrong buffer comes up.
+    let scratch = Scratch::new("session-active");
+    let second = scratch.file("second.txt", "second\n");
+    let third = scratch.file("third.txt", "third\n");
+
+    let mut harness = Harness::nano().with_text("");
+    harness.editor_mut().restore_session(&Session {
+        root: None,
+        files: vec![
+            OpenFile {
+                path: scratch.0.join("deleted.txt"),
+                line: 0,
+                column: 0,
+            },
+            OpenFile {
+                path: second,
+                line: 0,
+                column: 0,
+            },
+            OpenFile {
+                path: third,
+                line: 0,
+                column: 0,
+            },
+        ],
+        // The third file in the saved list, which is now the second open.
+        active: 2,
+    });
+
+    assert_eq!(harness.text(), "third\n", "the one that was in front");
 }
 
 #[test]
@@ -396,11 +484,7 @@ fn a_cursor_past_the_end_of_a_shortened_file_lands_inside_it() {
 // -- work that was never saved ---------------------------------------------
 
 fn recovery_for(path: &std::path::Path, text: &str) -> Recovery {
-    Recovery {
-        path: Some(path.to_path_buf()),
-        saved_at: "2026-01-01 12:00".to_string(),
-        text: text.to_string(),
-    }
+    Recovery::detached(Some(path.to_path_buf()), "2026-01-01 12:00 UTC", text)
 }
 
 #[test]
@@ -502,6 +586,133 @@ fn an_unnamed_buffer_is_never_offered_a_recovery() {
         .editor_mut()
         .offer_recovery_from(vec![recovery_for(std::path::Path::new("x.txt"), "other\n")]);
     assert!(!offered, "there is nothing to match it against");
+}
+
+#[test]
+fn cancelling_the_question_keeps_the_work() {
+    // Esc while thinking about it must not be read as "throw it away". The
+    // recovery file may be the only copy of that text in the world.
+    let scratch = Scratch::new("recover-cancel");
+    let path = scratch.file("draft.txt", "what was saved\n");
+    let directory = scratch.0.join("recovery");
+    Recovery::write_in(&directory, Some(&path), 0, "what was typed\n");
+
+    let mut harness = Harness::nano().with_document(Document::open(&path).unwrap());
+    harness
+        .editor_mut()
+        .offer_recovery_from(Recovery::pending_in(&directory));
+    harness.feed("^C").unwrap();
+
+    assert_eq!(
+        harness.text(),
+        "what was saved\n",
+        "the buffer is untouched"
+    );
+    assert_eq!(
+        Recovery::pending_in(&directory).len(),
+        1,
+        "and the file is still there to be offered again"
+    );
+}
+
+#[test]
+fn saying_no_is_the_one_answer_that_deletes_it() {
+    let scratch = Scratch::new("recover-no-deletes");
+    let path = scratch.file("draft.txt", "what was saved\n");
+    let directory = scratch.0.join("recovery");
+    Recovery::write_in(&directory, Some(&path), 0, "what was typed\n");
+
+    let mut harness = Harness::nano().with_document(Document::open(&path).unwrap());
+    harness
+        .editor_mut()
+        .offer_recovery_from(Recovery::pending_in(&directory));
+    harness.type_text("n");
+
+    assert!(
+        Recovery::pending_in(&directory).is_empty(),
+        "turned down while looking at it"
+    );
+}
+
+#[test]
+fn restoring_it_also_clears_the_file_away() {
+    let scratch = Scratch::new("recover-yes-clears");
+    let path = scratch.file("draft.txt", "what was saved\n");
+    let directory = scratch.0.join("recovery");
+    Recovery::write_in(&directory, Some(&path), 0, "what was typed\n");
+
+    let mut harness = Harness::nano().with_document(Document::open(&path).unwrap());
+    harness
+        .editor_mut()
+        .offer_recovery_from(Recovery::pending_in(&directory));
+    harness.type_text("y");
+
+    assert_eq!(harness.text(), "what was typed\n");
+    assert!(
+        Recovery::pending_in(&directory).is_empty(),
+        "the text is in front of them now"
+    );
+}
+
+#[test]
+fn work_typed_into_a_pipe_is_offered_back_too() {
+    // `git log | aitch`, edited, then a crash. There is no file to key on,
+    // so this is the case where the recovery file is the only copy.
+    let scratch = Scratch::new("recover-unnamed");
+    let directory = scratch.0.join("recovery");
+    Recovery::write_in(&directory, None, 0x1234_0000, "notes on the log\n");
+
+    let mut harness = Harness::nano().with_text("");
+    let offered = harness
+        .editor_mut()
+        .offer_recovery_from(Recovery::pending_in(&directory));
+
+    assert!(offered, "an empty unnamed buffer can take it");
+    harness.type_text("y");
+    assert_eq!(harness.text(), "notes on the log\n");
+}
+
+#[test]
+fn an_unnamed_recovery_never_lands_on_top_of_something() {
+    let scratch = Scratch::new("recover-unnamed-busy");
+    let directory = scratch.0.join("recovery");
+    Recovery::write_in(&directory, None, 0x1234_0000, "old work\n");
+
+    let mut harness = Harness::nano().with_text("something already here\n");
+    let offered = harness
+        .editor_mut()
+        .offer_recovery_from(Recovery::pending_in(&directory));
+
+    assert!(!offered, "not over the top of a buffer in use");
+    assert_eq!(harness.text(), "something already here\n");
+    assert_eq!(
+        Recovery::pending_in(&directory).len(),
+        1,
+        "and it is left on disk for a buffer that can take it"
+    );
+}
+
+#[test]
+fn a_deliberate_quit_takes_the_recovery_files_with_it() {
+    // Answering "no" to save-before-quit is a decision to throw the edits
+    // away. Being offered them back tomorrow would undo that decision.
+    let scratch = Scratch::new("recover-abandon");
+    let path = scratch.file("draft.txt", "saved\n");
+
+    let mut harness = Harness::nano().with_document(Document::open(&path).unwrap());
+    harness.type_text("edited");
+    assert!(harness.editor().needs_recovery());
+
+    harness.editor().write_recovery();
+    harness.editor().abandon_recovery();
+
+    // Whatever the real state directory is, nothing this run wrote is left.
+    assert!(
+        Recovery::pending()
+            .iter()
+            .all(|r| r.path.as_deref() != Some(path.as_path())),
+        "the dirty buffer's file goes too"
+    );
 }
 
 #[test]

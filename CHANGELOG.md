@@ -42,6 +42,35 @@ Fixed:
   expands. The `Command::InsertTab` arm it used to reach was unreachable —
   the buffer answered first — which would have made the setting quietly do
   nothing.
+- **Esc at the recovery prompt no longer deletes the recovery file.** The
+  answer arm caught Cancel along with No, so "let me think about it" threw
+  the work away — the one thing this feature exists to prevent.
+- **Unsaved work in a buffer with no name is offered back.** It was written
+  to a file keyed on the buffer's position, which nothing could ever match
+  against a later run, and which the next run's own scratch buffer then
+  deleted. Recovery files for unnamed buffers are now keyed per run, and an
+  empty unnamed buffer is offered one.
+- Quitting deliberately after answering "no" to save-before-quit now drops
+  the recovery file, instead of offering the edits back tomorrow.
+- `[font] size = 0` aborted before the window opened: a zero line height is
+  an assertion failure inside the text shaper. Sizes are clamped, and the
+  shaper's metrics have a floor as well.
+- `tab_width` now sets how wide a tab is *drawn*, not only what the Tab key
+  inserts, so a file that already contains tabs lines up as configured.
+- Ignore rules containing a slash are anchored at the project root. The tree
+  anchored them at whichever folder was being expanded, so `src/generated`
+  became `src/src/generated` there and matched nothing, while quick open and
+  project search excluded it.
+- `echo hi | aitch notes.txt` opens `notes.txt`. The pipe was read first and
+  silently replaced the file, `+LINE` and all — and a pipe left open by a
+  script held the editor closed.
+- Restoring a session no longer lands on the wrong buffer when one of the
+  files has been deleted since; `--config` reports a path that is not there;
+  a bad keymap name in a live reload reports the problem instead of
+  "settings reloaded"; `+LINE` scrolls to the line rather than leaving the
+  cursor off-screen; the recovery prompt shows a date instead of epoch
+  seconds; and `stable_hash` uses the actual FNV-1a prime, which had an
+  extra digit in it.
 
 The recovery timer is the one thing that could have cost idle CPU, so it is
 armed only while something is unsaved and stood down the moment it is saved.

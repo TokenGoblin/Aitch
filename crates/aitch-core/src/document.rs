@@ -6,10 +6,21 @@
 //! round-trip across two crates. Phase 4's `workspace.rs` owns a set of these.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use crate::buffer::Buffer;
 use crate::fileio::{self, Encoding, FileError};
+
+/// A token no other buffer in this run will be given.
+///
+/// The process id keeps runs apart; the counter keeps buffers apart within
+/// one. Neither has to survive a restart: after a restart a recovery file is
+/// found by reading it, not by recomputing its name.
+fn next_recovery_key() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    (u64::from(std::process::id()) << 32) | NEXT.fetch_add(1, Ordering::Relaxed)
+}
 
 /// A buffer plus the file it belongs to.
 #[derive(Debug)]
@@ -25,6 +36,12 @@ pub struct Document {
     /// something else changing the file under us is noticed rather than
     /// quietly overwritten. PLAN.md Phase 4: never silently overwrite.
     seen: Option<SystemTime>,
+    /// What an unnamed buffer's recovery file is named after.
+    ///
+    /// Unique to this run, so a later run's scratch buffer cannot be mistaken
+    /// for this one and have its recovery file deleted. A named buffer keys
+    /// on its path instead and never looks at this.
+    recovery_key: u64,
 }
 
 impl Document {
@@ -35,6 +52,7 @@ impl Document {
             path: None,
             encoding: Encoding::UTF8,
             seen: None,
+            recovery_key: next_recovery_key(),
         }
     }
 
@@ -48,6 +66,7 @@ impl Document {
             path: Some(path.to_path_buf()),
             encoding: loaded.encoding,
             seen: modified_at(path),
+            recovery_key: next_recovery_key(),
         })
     }
 
@@ -58,6 +77,7 @@ impl Document {
             path: Some(path.to_path_buf()),
             encoding: Encoding::UTF8,
             seen: None,
+            recovery_key: next_recovery_key(),
         }
     }
 
@@ -100,6 +120,11 @@ impl Document {
 
     pub fn encoding(&self) -> Encoding {
         self.encoding
+    }
+
+    /// What this buffer's recovery file is named after when it has no path.
+    pub fn recovery_key(&self) -> u64 {
+        self.recovery_key
     }
 
     pub fn is_dirty(&self) -> bool {

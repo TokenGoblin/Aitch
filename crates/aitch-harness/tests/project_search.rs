@@ -56,18 +56,30 @@ fn project(name: &str) -> (Scratch, Harness) {
     (scratch, harness)
 }
 
-/// Wait for the search to deliver something and settle.
+/// Wait for the search to deliver everything it is going to.
+///
+/// Not just the first hit: the walker runs on several threads, so a test that
+/// counted or indexed results the moment one arrived would race the rest of
+/// them. Waiting for the count to stop moving is what makes that
+/// deterministic.
 fn settle(h: &mut Harness) {
     let start = Instant::now();
+    let mut steady = 0;
+    let mut last = usize::MAX;
     while start.elapsed() < Duration::from_secs(10) {
         h.editor_mut().poll_search();
-        if !h.results().is_empty() {
-            // Give any stragglers a moment, then drain again.
-            std::thread::sleep(Duration::from_millis(60));
-            h.editor_mut().poll_search();
-            return;
+        let now = h.results().len();
+        if now > 0 && now == last {
+            steady += 1;
+            // Three quiet polls in a row: everything that is coming is here.
+            if steady == 3 {
+                return;
+            }
+        } else {
+            steady = 0;
         }
-        std::thread::sleep(Duration::from_millis(5));
+        last = now;
+        std::thread::sleep(Duration::from_millis(30));
     }
 }
 

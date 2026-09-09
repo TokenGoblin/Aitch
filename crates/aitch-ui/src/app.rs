@@ -225,7 +225,7 @@ impl App {
         } else {
             session.save();
         }
-        self.editor.discard_recovery();
+        self.editor.abandon_recovery();
     }
 
     fn fail(&mut self, event_loop: &ActiveEventLoop, message: String) {
@@ -359,12 +359,18 @@ impl App {
         // needs a new one rather than a redraw.
         let font_changed = config.font != self.font;
         self.font = config.font.clone();
-        self.editor.apply_config(config);
+        let complaint = self.editor.apply_config(config);
 
-        match error {
-            Some(error) => self.editor.say(error.to_string()),
-            None if font_changed => self.editor.say("settings reloaded — restart for the font"),
-            None => self.editor.say("settings reloaded"),
+        match (error, complaint) {
+            // Whatever went wrong is more use than "reloaded". Saying the
+            // latter over the former is how a typo in a keymap name comes to
+            // look like it worked.
+            (Some(error), _) => self.editor.say(error.to_string()),
+            (None, Some(complaint)) => self.editor.say(complaint),
+            (None, None) if font_changed => {
+                self.editor.say("settings reloaded — restart for the font")
+            }
+            (None, None) => self.editor.say("settings reloaded"),
         }
 
         self.generation += 1;
@@ -470,11 +476,24 @@ impl ApplicationHandler<Wake> for App {
             Err(e) => return self.fail(event_loop, format!("could not open a window: {e}")),
         };
 
-        match Surface::with_font(window.clone(), self.font.size, self.font.family.clone()) {
+        match Surface::with_font(
+            window.clone(),
+            self.font.size(),
+            self.font.family.clone(),
+            self.editor.config().tab_width,
+        ) {
             Ok(surface) => {
                 let lines = surface.visible_lines();
                 self.editor.viewport_mut().set_height_lines(lines);
+                let line_height = surface.line_height() as f64;
                 self.surface = Some(surface);
+
+                // Only now is the window's height known, so this is the first
+                // point at which "scroll to the cursor" means anything. A
+                // `+LINE` or a restored session put the cursor somewhere
+                // before there was a viewport to put it in.
+                self.editor.scroll_to_cursor();
+                self.scroll_from_viewport(line_height);
             }
             Err(e) => return self.fail(event_loop, e.to_string()),
         }

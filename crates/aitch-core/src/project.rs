@@ -182,7 +182,7 @@ impl Tree {
     }
 
     fn push_children(&self, directory: &Path, depth: usize, rows: &mut Vec<Row>) {
-        for (path, is_dir) in read_directory(directory, &self.ignores) {
+        for (path, is_dir) in read_directory(directory, &self.root, &self.ignores) {
             let expanded = is_dir && self.is_expanded(&path);
             rows.push(Row {
                 path: path.clone(),
@@ -197,7 +197,11 @@ impl Tree {
     }
 }
 
-/// A walker over `root`, respecting `.gitignore` and the config's own rules.
+/// A walker from `start`, respecting `.gitignore` and the config's own rules.
+///
+/// `anchor` is the project root that relative rules are resolved against.
+/// It is usually the same as `start`, and deliberately is not when the tree
+/// expands a subfolder.
 ///
 /// The `ignore` crate gives `.gitignore`, `.ignore`, the global one and the
 /// parent chain for free. `extra` is what `aitchrc.toml` adds on top, in the
@@ -212,8 +216,8 @@ impl Tree {
 ///
 /// A rule that will not compile is skipped rather than fatal: one bad line in
 /// a config should not stop the tree from listing anything at all.
-pub(crate) fn walker(root: &Path, extra: &[String]) -> WalkBuilder {
-    let mut builder = WalkBuilder::new(root);
+pub(crate) fn walker(start: &Path, anchor: &Path, extra: &[String]) -> WalkBuilder {
+    let mut builder = WalkBuilder::new(start);
     builder
         .hidden(true)
         .git_ignore(true)
@@ -222,7 +226,10 @@ pub(crate) fn walker(root: &Path, extra: &[String]) -> WalkBuilder {
         .require_git(false);
 
     if !extra.is_empty() {
-        let mut rules = GitignoreBuilder::new(root);
+        // Anchored at the project root, never at the folder being walked.
+        // `src/generated` has to mean the same thing whether it is found by
+        // quick open from the top or by expanding `src` in the tree.
+        let mut rules = GitignoreBuilder::new(anchor);
         for pattern in extra {
             let _ = rules.add_line(None, pattern);
         }
@@ -245,8 +252,8 @@ pub(crate) fn walker(root: &Path, extra: &[String]) -> WalkBuilder {
 ///
 /// An unreadable directory yields nothing rather than an error: a permission
 /// problem three folders down should not take the sidebar with it.
-fn read_directory(directory: &Path, ignores: &[String]) -> Vec<(PathBuf, bool)> {
-    let mut entries: Vec<(PathBuf, bool)> = walker(directory, ignores)
+fn read_directory(directory: &Path, root: &Path, ignores: &[String]) -> Vec<(PathBuf, bool)> {
+    let mut entries: Vec<(PathBuf, bool)> = walker(directory, root, ignores)
         .max_depth(Some(1))
         .build()
         .filter_map(Result::ok)
@@ -300,7 +307,7 @@ impl PathIndex {
     pub fn build(root: &Path, ignores: &[String]) -> PathIndex {
         let (sender, receiver) = mpsc::channel::<String>();
 
-        walker(root, ignores).build_parallel().run(|| {
+        walker(root, root, ignores).build_parallel().run(|| {
             let sender = sender.clone();
             let root = root.to_path_buf();
             Box::new(move |entry| {

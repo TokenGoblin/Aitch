@@ -116,8 +116,9 @@ pub struct Editor {
     view: ViewOptions,
     /// The settings from `aitchrc.toml`.
     config: Config,
-    /// Recovered text waiting on an answer.
-    pending_recovery: Option<String>,
+    /// A recovery waiting on an answer. Held whole rather than as its text,
+    /// so that the file it came from is the one deleted.
+    pending_recovery: Option<Recovery>,
     /// Wakes the event loop when a parse finishes. The core cannot know how,
     /// so the UI supplies it; without one, colour still arrives, just not
     /// until something else causes a redraw.
@@ -234,16 +235,23 @@ impl Editor {
     /// The theme and the font belong to the UI, which reads them from here.
     /// A keymap named in the config that cannot be loaded leaves the current
     /// one in place: better the keys you had than no keys at all.
-    pub fn apply_config(&mut self, config: Config) {
+    /// Returns what went wrong, if anything, rather than only saying it: a
+    /// live reload has its own message to print and must not print it over
+    /// the top of a real complaint.
+    pub fn apply_config(&mut self, config: Config) -> Option<String> {
         self.view.line_numbers = config.line_numbers;
         self.view.whitespace = config.whitespace;
 
+        let mut complaint = None;
         if let Some(keymap) = load_keymap(&config.keymap) {
             self.keymap = keymap;
         } else {
-            self.say(format!("no keymap called {:?}", config.keymap));
+            let message = format!("no keymap called {:?} — keys unchanged", config.keymap);
+            self.say(message.clone());
+            complaint = Some(message);
         }
         self.config = config;
+        complaint
     }
 
     // -- what to remember ---------------------------------------------------
@@ -281,7 +289,11 @@ impl Editor {
         if let Some(root) = &session.root {
             self.workspace.set_root(root.clone());
         }
-        for file in &session.files {
+        // Which buffer to end on, counted over the files that actually
+        // opened. `session.active` indexes the saved list, and anything
+        // deleted since is skipped, so the two stop agreeing.
+        let mut active = None;
+        for (saved, file) in session.files.iter().enumerate() {
             if !file.path.exists() {
                 continue;
             }
@@ -291,9 +303,14 @@ impl Editor {
                     .active_mut()
                     .buffer
                     .set_cursor(Position::new(file.line.min(last), file.column));
+                if saved == session.active {
+                    active = Some(self.workspace.active_index());
+                }
             }
         }
-        self.workspace.activate(session.active);
+        if let Some(active) = active {
+            self.workspace.activate(active);
+        }
         self.follow_cursor();
         self.start_highlighting();
     }
@@ -313,30 +330,51 @@ impl Editor {
     /// which candidate matches, and what happens when it matches exactly,
     /// is the part worth pinning down.
     pub fn offer_recovery_from(&mut self, candidates: Vec<Recovery>) -> bool {
-        let Some(path) = self.workspace.active().path().map(Path::to_path_buf) else {
-            return false;
-        };
+        let path = self.workspace.active().path().map(Path::to_path_buf);
         let current = self.workspace.active().buffer.text().to_string();
 
-        let Some(recovery) = candidates
-            .into_iter()
-            .find(|candidate| candidate.path.as_deref() == Some(path.as_path()))
-        else {
+        let recovery = match &path {
+            // A named buffer takes the recovery for its own file and no
+            // other. Somebody who asked for this file should not be handed
+            // work from a different one.
+            Some(path) => candidates
+                .into_iter()
+                .find(|candidate| candidate.path.as_deref() == Some(path.as_path())),
+
+            // An unnamed buffer takes an unnamed recovery, but only into an
+            // empty one: text typed into `git log | aitch` exists nowhere
+            // else, and the alternative is leaving it on disk forever with
+            // nothing that can ever offer it back.
+            None if current.is_empty() => candidates
+                .into_iter()
+                .rfind(|candidate| candidate.path.is_none()),
+            None => None,
+        };
+        let Some(recovery) = recovery else {
             return false;
         };
 
         // Identical to what is on disk: the crash cost nothing, so say
         // nothing and clear it away.
         if recovery.text == current {
-            Recovery::discard(Some(&path), self.workspace.active_index());
+            recovery.remove();
             return false;
         }
 
-        self.pending_recovery = Some(recovery.text.clone());
         self.open_prompt(Kind::RestoreRecovery {
             describes: recovery.describe(),
         });
+        self.pending_recovery = Some(recovery);
         true
+    }
+
+    /// Scroll so the cursor is on screen.
+    ///
+    /// The UI calls this once the window exists: a `+LINE` or a restored
+    /// session set the cursor before there was a viewport with a height, so
+    /// nothing could be scrolled to it at the time.
+    pub fn scroll_to_cursor(&mut self) {
+        self.follow_cursor();
     }
 
     /// Whether anything is unsaved and so worth a recovery file.
@@ -350,19 +388,35 @@ impl Editor {
     /// the point is to hold work that exists nowhere else, and a couple of
     /// seconds of exposure is the price of not writing the file constantly.
     pub fn write_recovery(&self) {
-        for (index, document) in self.workspace.documents().iter().enumerate() {
+        for document in self.workspace.documents() {
             if document.is_dirty() {
-                Recovery::write(document.path(), index, &document.buffer.text().to_string());
+                Recovery::write(
+                    document.path(),
+                    document.recovery_key(),
+                    &document.buffer.text().to_string(),
+                );
             }
         }
     }
 
     /// Drop the recovery files for buffers that no longer need them.
     pub fn discard_recovery(&self) {
-        for (index, document) in self.workspace.documents().iter().enumerate() {
+        for document in self.workspace.documents() {
             if !document.is_dirty() {
-                Recovery::discard(document.path(), index);
+                Recovery::discard(document.path(), document.recovery_key());
             }
+        }
+    }
+
+    /// Drop every recovery file this run owns, on the way out of a
+    /// deliberate quit.
+    ///
+    /// Including the dirty ones: answering "no" to save-before-quit is a
+    /// decision to throw the edits away, and being offered them back
+    /// tomorrow would undo that decision without asking.
+    pub fn abandon_recovery(&self) {
+        for document in self.workspace.documents() {
+            Recovery::discard(document.path(), document.recovery_key());
         }
     }
 
@@ -1180,9 +1234,18 @@ impl Editor {
             },
 
             Kind::RestoreRecovery { .. } => {
+                // Cancel is not an answer. Esc while thinking about it must
+                // leave the file exactly where it is, because it may be the
+                // only copy of that work in the world.
+                if matches!(answer, Answer::Cancel) {
+                    self.say("kept — it will be offered again next time");
+                    return Outcome::Redraw;
+                }
+
                 let recovered = self.pending_recovery.take();
                 match (answer, recovered) {
-                    (Answer::Yes, Some(text)) => {
+                    (Answer::Yes, Some(recovery)) => {
+                        let text = recovery.text.clone();
                         // Put it in through the ordinary editing path, so it
                         // is one undo step and the buffer knows it is dirty.
                         self.workspace.active_mut().buffer.select_all();
@@ -1193,14 +1256,18 @@ impl Editor {
                         self.workspace.active_mut().buffer.clear_selection();
                         self.follow_cursor();
                         self.start_highlighting();
+                        // The recovery file has done its job: the text is in
+                        // a buffer the person is looking at.
+                        recovery.remove();
                         self.say("restored — save it to keep it");
                     }
-                    _ => {
-                        // Discarded on purpose, so the file can go.
-                        let path = self.workspace.active().path().map(Path::to_path_buf);
-                        Recovery::discard(path.as_deref(), self.workspace.active_index());
+                    (_, Some(recovery)) => {
+                        // Turned down while looking at it. This is the one
+                        // case where deleting the file is what was asked for.
+                        recovery.remove();
                         self.say("left as it was on disk");
                     }
+                    (_, None) => self.say("nothing to restore"),
                 }
                 Outcome::Redraw
             }

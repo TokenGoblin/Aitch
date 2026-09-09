@@ -18,6 +18,9 @@ use crate::theme::Theme;
 const ATLAS_SIZE: u32 = 1024;
 
 /// Default font size in logical pixels. `aitchrc` overrides it in Phase 7.
+/// How wide a tab is drawn when nothing says otherwise.
+const DEFAULT_TAB_WIDTH: usize = 4;
+
 const FONT_SIZE: f32 = 14.0;
 
 /// Everything needed to put pixels in a window.
@@ -37,14 +40,15 @@ pub struct Surface {
 impl Surface {
     /// Create a surface for `window` with the default font.
     pub fn new(window: Arc<Window>) -> Result<Surface, SurfaceError> {
-        Surface::with_font(window, FONT_SIZE, None)
+        Surface::with_font(window, FONT_SIZE, None, DEFAULT_TAB_WIDTH)
     }
 
-    /// Create a surface, choosing the font from the config.
+    /// Create a surface, choosing the font and tab width from the config.
     pub fn with_font(
         window: Arc<Window>,
         font_size: f32,
         font_family: Option<String>,
+        tab_width: usize,
     ) -> Result<Surface, SurfaceError> {
         let size = window.inner_size();
         let scale_factor = window.scale_factor();
@@ -95,7 +99,8 @@ impl Surface {
 
         let atlas = Atlas::new(&device, &queue, ATLAS_SIZE);
         let pipeline = QuadPipeline::new(&device, format, atlas.bind_group_layout());
-        let text = TextRenderer::with_family(font_size, scale_factor as f32, font_family);
+        let text =
+            TextRenderer::with_family(font_size, scale_factor as f32, font_family, tab_width);
 
         Ok(Surface {
             surface,

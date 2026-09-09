@@ -149,7 +149,7 @@ impl ProjectSearch {
         let finished = Arc::new(AtomicBool::new(false));
         let found = Arc::new(AtomicUsize::new(0));
 
-        let walker = crate::project::walker(root, ignores).build_parallel();
+        let walker = crate::project::walker(root, root, ignores).build_parallel();
 
         let root = root.to_path_buf();
         let thread_cancelled = cancelled.clone();

@@ -67,17 +67,26 @@ pub struct TextRenderer {
 
 impl TextRenderer {
     pub fn new(font_size: f32, scale_factor: f32) -> TextRenderer {
-        TextRenderer::with_family(font_size, scale_factor, None)
+        TextRenderer::with_family(font_size, scale_factor, None, DEFAULT_TAB_WIDTH)
     }
 
-    /// The same, with a font family from the config.
+    /// The same, with the font family and tab width from the config.
     ///
     /// A family that is not installed falls back to whatever the system calls
-    /// monospace, which is better than refusing to draw.
-    pub fn with_family(font_size: f32, scale_factor: f32, family: Option<String>) -> TextRenderer {
+    /// monospace, which is better than refusing to draw. `tab_width` is how
+    /// wide a literal tab is drawn, which is a separate question from what
+    /// the Tab key inserts — a file full of tabs still has to line up.
+    pub fn with_family(
+        font_size: f32,
+        scale_factor: f32,
+        family: Option<String>,
+        tab_width: usize,
+    ) -> TextRenderer {
         let mut font_system = FontSystem::new();
         let metrics = metrics_for(font_size, scale_factor);
+        let tab_width = tab_width.clamp(1, 16) as u16;
         let mut layout = cosmic_text::Buffer::new(&mut font_system, metrics);
+        layout.set_tab_width(&mut font_system, tab_width);
         // Long lines scroll horizontally rather than wrapping. Soft wrap is a
         // Phase 5 toggle, and reflow would break the line-per-row assumption
         // the viewport is built on.
@@ -85,6 +94,7 @@ impl TextRenderer {
 
         let mut chrome = cosmic_text::Buffer::new(&mut font_system, metrics);
         chrome.set_wrap(&mut font_system, Wrap::None);
+        chrome.set_tab_width(&mut font_system, tab_width);
 
         let cell_width = measure_cell_width(&mut font_system, metrics, family.as_deref());
 
@@ -598,9 +608,18 @@ impl TextRenderer {
     }
 }
 
+/// How wide a tab is drawn when nothing says otherwise.
+const DEFAULT_TAB_WIDTH: usize = 4;
+
 fn metrics_for(font_size: f32, scale_factor: f32) -> Metrics {
     let physical = font_size * scale_factor;
-    Metrics::new(physical, (physical * LINE_HEIGHT_RATIO).round())
+    // Both floors at 1: a zero line height is an assertion failure inside the
+    // shaper, and a window that will not open is the worst way to find out
+    // about a bad number in a config file.
+    Metrics::new(
+        physical.max(1.0),
+        (physical * LINE_HEIGHT_RATIO).round().max(1.0),
+    )
 }
 
 /// Shape a single `M` to find the monospace advance width.

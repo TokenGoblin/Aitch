@@ -4,7 +4,7 @@ use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use aitch_core::{Buffer, Config, Document, Position, Session, Workspace};
+use aitch_core::{Buffer, Config, ConfigError, Document, Position, Session, Workspace};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -61,12 +61,32 @@ fn main() -> ExitCode {
     } else {
         arguments.config.clone().or_else(Config::default_path)
     };
-    let (config, config_error) = match &config_path {
+    let (config, mut config_error) = match &config_path {
         Some(path) => Config::load_from(path),
         None => (Config::default(), None),
     };
 
-    let piped = read_stdin();
+    // Not having a config is the ordinary state of a fresh install, so
+    // `load_from` says nothing about a missing file. A path the user typed is
+    // different: silence there means a mistyped `--config` looks like it
+    // worked, and none of the settings they were testing appear.
+    if let Some(path) = &arguments.config {
+        if config_error.is_none() && !path.exists() {
+            config_error = Some(ConfigError {
+                path: path.clone(),
+                message: "no such file".to_string(),
+            });
+        }
+    }
+
+    // Only when there is nothing else to open. Reading a pipe that stays
+    // open would otherwise hold the editor closed, and `aitch notes.txt` in a
+    // script with stdin attached would silently open the pipe instead.
+    let piped = if arguments.path.is_some() {
+        None
+    } else {
+        read_stdin()
+    };
 
     let workspace = match build_workspace(&arguments, piped) {
         Ok(workspace) => workspace,
@@ -179,11 +199,15 @@ fn read_stdin() -> Option<String> {
 }
 
 fn build_workspace(arguments: &Arguments, piped: Option<String>) -> Result<Workspace, String> {
-    // Piped text wins: someone who ran `git log | aitch` wants the log.
-    if let Some(text) = piped {
-        let mut document = Document::blank();
-        document.buffer = Buffer::from_str(&text);
-        return Ok(Workspace::new(document));
+    // A named file wins over a pipe: `echo hi | aitch notes.txt` asked for
+    // notes.txt, and quietly opening the pipe instead loses the argument and
+    // any `+LINE` with it.
+    if arguments.path.is_none() {
+        if let Some(text) = piped {
+            let mut document = Document::blank();
+            document.buffer = Buffer::from_str(&text);
+            return Ok(Workspace::new(document));
+        }
     }
 
     let Some(path) = &arguments.path else {
@@ -300,6 +324,22 @@ mod tests {
         // guessing that it meant a line number would be worse.
         let parsed = parse_args(&["+"]).unwrap().unwrap();
         assert_eq!(parsed.path, Some(PathBuf::from("+")));
+    }
+
+    #[test]
+    fn a_named_file_wins_over_a_pipe() {
+        // `echo hi | aitch notes.txt` asked for notes.txt.
+        let arguments = Arguments {
+            path: Some(PathBuf::from("notes.txt")),
+            ..Arguments::default()
+        };
+        let workspace = build_workspace(&arguments, Some("piped in\n".to_string())).unwrap();
+        assert_eq!(
+            workspace.active().path(),
+            Some(std::path::Path::new("notes.txt")),
+            "the argument, not the pipe"
+        );
+        assert_eq!(workspace.active().buffer.text().to_string(), "");
     }
 
     #[test]

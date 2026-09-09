@@ -37,15 +37,38 @@ impl ThemeChoice {
 pub struct FontConfig {
     /// A family name, or `None` for whatever the system calls monospace.
     pub family: Option<String>,
-    /// Size in logical pixels.
+    /// Size in logical pixels. Read through `size()`, which keeps it sane.
     pub size: f32,
 }
+
+impl FontConfig {
+    /// The size to actually draw at.
+    ///
+    /// Clamped, because the window is built from this: a size of zero gives a
+    /// line height of zero, which the text shaper asserts on, and the editor
+    /// would abort before there was a status line to complain on — the one
+    /// thing this module exists to prevent. NaN falls back to the default for
+    /// the same reason.
+    pub fn size(&self) -> f32 {
+        if self.size.is_nan() {
+            return DEFAULT_FONT_SIZE;
+        }
+        self.size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
+    }
+}
+
+/// What a font size falls back to, and the range it is held within.
+const DEFAULT_FONT_SIZE: f32 = 14.0;
+/// Below about four pixels a glyph has no pixels left to be a glyph with.
+const MIN_FONT_SIZE: f32 = 4.0;
+/// Above this a single line does not fit on a screen.
+const MAX_FONT_SIZE: f32 = 200.0;
 
 impl Default for FontConfig {
     fn default() -> FontConfig {
         FontConfig {
             family: None,
-            size: 14.0,
+            size: DEFAULT_FONT_SIZE,
         }
     }
 }
@@ -186,6 +209,45 @@ impl std::error::Error for ConfigError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_font_size_that_would_not_open_a_window_is_clamped() {
+        // Zero gives a line height of zero, which the shaper asserts on: the
+        // editor would abort before there was a status line to complain on,
+        // and the only way out would be editing the config in another editor.
+        let zero = FontConfig {
+            family: None,
+            size: 0.0,
+        };
+        assert!(zero.size() >= MIN_FONT_SIZE);
+
+        let negative = FontConfig {
+            family: None,
+            size: -12.0,
+        };
+        assert!(negative.size() >= MIN_FONT_SIZE);
+
+        let enormous = FontConfig {
+            family: None,
+            size: 100_000.0,
+        };
+        assert!(enormous.size() <= MAX_FONT_SIZE);
+
+        let nonsense = FontConfig {
+            family: None,
+            size: f32::NAN,
+        };
+        assert_eq!(nonsense.size(), DEFAULT_FONT_SIZE);
+    }
+
+    #[test]
+    fn a_sensible_font_size_is_left_alone() {
+        let config = FontConfig {
+            family: None,
+            size: 13.5,
+        };
+        assert_eq!(config.size(), 13.5);
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT: AtomicUsize = AtomicUsize::new(0);
