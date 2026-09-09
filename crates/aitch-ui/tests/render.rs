@@ -5,8 +5,11 @@
 //! screen" is checkable without a screen, and it is the one rendering bug that
 //! would otherwise reach a human every time.
 //!
-//! Needs a GPU adapter. Where there is none — a bare CI runner — the test
-//! reports that it did not run rather than passing quietly.
+//! Needs a GPU adapter. Where there is none, the test skips — but a skipped
+//! test that reports "ok" is indistinguishable from a passing one, and libtest
+//! swallows the message. So CI sets `AITCH_REQUIRE_GPU=1`, which turns a
+//! missing adapter into a failure. Without that, coverage can quietly vanish
+//! from a platform and nobody finds out.
 
 use aitch_core::{Buffer, Position};
 use aitch_ui::render::atlas::Atlas;
@@ -24,7 +27,22 @@ struct Gpu {
 }
 
 /// `None` when the machine has no usable GPU adapter at all.
+///
+/// Panics instead when `AITCH_REQUIRE_GPU` is set, so CI cannot pass by
+/// skipping every rendering test.
 fn gpu() -> Option<Gpu> {
+    match adapter_and_device() {
+        Some(gpu) => Some(gpu),
+        None if std::env::var_os("AITCH_REQUIRE_GPU").is_some() => {
+            panic!(
+                "no GPU adapter, and AITCH_REQUIRE_GPU is set. On a Linux                  runner this means the software rasterizer (lavapipe, from                  mesa-vulkan-drivers) is missing or was not picked up."
+            )
+        }
+        None => None,
+    }
+}
+
+fn adapter_and_device() -> Option<Gpu> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::LowPower,

@@ -43,8 +43,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # A rendering test that skips for want of a GPU still reports "ok", and
+      # libtest hides the message saying why. This makes a missing adapter a
+      # failure, so the render path cannot quietly lose a platform.
       - name: Test
         run: cargo test --workspace
+        env:
+          AITCH_REQUIRE_GPU: 1
 
       - name: Build
         run: cargo build --workspace --release
