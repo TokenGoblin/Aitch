@@ -70,8 +70,9 @@ the window's text atlas is built. Changing it says so on the status line and
 applies at the next start.
 
 `tab_width` and `expand_tabs` change what the **Tab key inserts** from that
-moment on. They do not go back and re-indent anything already in the buffer;
-Aitch never rewrites text you did not ask it to.
+moment on, and `tab_width` also changes how a tab already in the file is
+drawn. Neither goes back and re-indents anything: Aitch never rewrites text
+you did not ask it to.
 
 ## The command line
 
