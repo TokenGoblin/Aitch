@@ -107,7 +107,9 @@ pub fn draw(
                 atlas,
                 instances,
                 buffer,
-                (sidebar_width + gutter_width, -layout.sub_line_offset),
+                // The one place the document's left edge is decided, so a
+                // click can be mapped back through the same number.
+                (text_origin_x(text, editor), -layout.sub_line_offset),
                 theme,
                 editor.highlights(),
                 editor.view(),
@@ -178,6 +180,42 @@ pub fn draw(
 ///
 /// Wide enough for the largest line number in the file, so the text does not
 /// shift sideways when the count crosses a power of ten while scrolling.
+/// Where the document's first column starts, in physical pixels.
+///
+/// The text does not begin at the window edge: the file tree takes a fixed
+/// column on the left when it is open, and the line-number gutter takes
+/// another when it is on. Drawing and hit-testing both have to agree about
+/// this, so both ask here rather than each working it out.
+pub fn text_origin_x(text: &TextRenderer, editor: &Editor) -> f32 {
+    let cell = text.cell_width();
+    let sidebar = if editor.tree().is_some() {
+        SIDEBAR_COLUMNS as f32 * cell
+    } else {
+        0.0
+    };
+    sidebar + gutter_columns(editor) as f32 * cell
+}
+
+/// Which character of the document is under a point, if any.
+///
+/// `sub_line_offset` is the same one [`draw`] is given. A point left of the
+/// text — in the sidebar or the gutter — is not in the document and gives
+/// `None`, so clicking a file in the tree does not drag the text cursor
+/// somewhere in the process.
+pub fn hit(
+    text: &TextRenderer,
+    editor: &Editor,
+    x: f32,
+    y: f32,
+    sub_line_offset: f32,
+) -> Option<aitch_core::Position> {
+    let origin = text_origin_x(text, editor);
+    if x < origin {
+        return None;
+    }
+    text.hit(x - origin, y, -sub_line_offset)
+}
+
 pub fn gutter_columns(editor: &Editor) -> usize {
     if !editor.view().line_numbers {
         return 0;

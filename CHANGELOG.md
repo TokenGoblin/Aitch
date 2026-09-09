@@ -22,6 +22,16 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- **Clicking landed in the wrong place whenever anything was to the left of
+  the text.** The document is drawn past the file tree and the line-number
+  gutter, but the hit test was handed the raw window x and knew about
+  neither — so with `M-N` on, a click landed four columns right of where it
+  was aimed, and with `M-T` open, twenty-eight. Clicking a file in the tree
+  moved the text cursor instead of doing nothing. There was no hit-testing
+  coverage at all; there is now, and `screen::text_origin_x` is the single
+  place the document's left edge is decided, so drawing and hit-testing
+  cannot drift apart again.
+
 - **Every project-search hit but the first was unreachable.** Pressing Down to
   move through the results restarted the search underneath them: the hits were
   thrown away, the selection was clamped back to the top of a list that no

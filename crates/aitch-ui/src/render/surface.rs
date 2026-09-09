@@ -164,8 +164,12 @@ impl Surface {
     }
 
     /// Map a click in physical pixels to a position in the buffer.
-    pub fn hit(&self, x: f32, y: f32, sub_line_offset: f32) -> Option<Position> {
-        self.text.hit(x, y, -sub_line_offset)
+    ///
+    /// The editor is needed because the sidebar and the line-number gutter
+    /// move where the document starts; [`screen::hit`] is where that is
+    /// worked out, alongside the drawing that has to match it.
+    pub fn hit(&self, editor: &Editor, x: f32, y: f32, sub_line_offset: f32) -> Option<Position> {
+        screen::hit(&self.text, editor, x, y, sub_line_offset)
     }
 
     /// Draw one frame: the text area, then the chrome under it.

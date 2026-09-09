@@ -415,7 +415,12 @@ impl App {
         }
 
         let offset = (self.scroll % line_height) as f32;
-        surface.hit(self.pointer.x as f32, self.pointer.y as f32, offset)
+        surface.hit(
+            &self.editor,
+            self.pointer.x as f32,
+            self.pointer.y as f32,
+            offset,
+        )
     }
 }
 
