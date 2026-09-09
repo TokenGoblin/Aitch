@@ -2,7 +2,12 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.1.2] — 2026-09-09
+
+0.1.1 was confirmed to start on the machine 0.1.0 died on, which settles the
+cause of that crash as the texture limit and nothing else. This is the rest of
+what an audit of the codebase turned up, plus a window that no longer arrives
+with a console beside it.
 
 ### Fixed
 
@@ -27,6 +32,46 @@ All notable changes to this project are documented here.
   `crates/aitch/tests/binary.rs` now reads the subsystem out of the built
   executable and checks the command line still answers, because both of these
   have been wrong in a shipped release and neither shows up in a unit test.
+
+- **Opening a file watched the folder it was in, recursively.** `aitch
+  notes.txt` sets a root so the tree and quick open have somewhere to look,
+  and the watcher took that as a folder to watch — so opening a file in a home
+  directory put a recursive watch on the whole of it, and every download or
+  browser cache write woke the loop, rebuilt the tree and threw away the
+  quick-open index. That is a standing cost against the zero-idle-CPU budget
+  in PLAN.md §6. A workspace now knows whether its folder was opened or
+  inferred, and only an opened one is watched. Nothing about safety rests on
+  it: a file changed underneath a buffer is still caught by
+  `Document::changed_on_disk`, which looks at the file itself.
+
+- **A busy compositor closed the editor.** A `SurfaceError::Timeout` means a
+  frame did not arrive in time and the next redraw should ask again; it was
+  treated as fatal. No work was lost — the recovery files survive it — but the
+  window vanished mid-session with nothing said.
+
+- **Switching files coloured the new one with the old one's parse.** The
+  syntax worker is kept when the next file is the same language, and it keeps
+  its tree between requests — so tree-sitter was handed a different document
+  with no edits to explain the difference, and reused the previous file's tree
+  at offsets that meant nothing in the new one. Open `main.rs`, `M-.` to
+  `lib.rs`, and `lib.rs` was coloured at `main.rs`'s offsets. A request now
+  says when it is a new document, and two coalesced requests keep that, or the
+  bug would come back whenever typing outran the parser.
+
+- **A full glyph atlas silently stopped drawing characters.** `overflowed` was
+  set and read nowhere. Past that point a glyph that will not fit is skipped,
+  and stays skipped, so text simply goes missing. It is said out loud now —
+  once, because it is a standing condition rather than an event.
+
+- **`tab_width` said it had been reloaded and had not.** The width is settled
+  when the renderer is built, so a live change moved the gutter and the Tab
+  key while the tabs already on screen kept the old width, and a tab-indented
+  file quietly stopped lining up.
+
+- **Bracket matching never fired at the very start of a file.** The candidates
+  were built as an array, `[cursor, cursor - 1]`, which evaluates both before
+  looking at either — so with the cursor at offset 0 the subtraction returned
+  from the whole function before the bracket under it was ever considered.
 
 ## [0.1.1] — 2026-09-09
 
