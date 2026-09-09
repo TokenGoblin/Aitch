@@ -32,6 +32,15 @@ pub enum Command {
     /// nano's `M-A`: start a selection anchored at the cursor.
     SetMark,
     SelectAll,
+    /// Run a movement, dragging the selection along with it.
+    ///
+    /// Shift+arrow and its relatives, expressed once instead of as a twin for
+    /// every movement command. Keymaps write `command = "select"` with the
+    /// movement in `arg`.
+    Select(Box<Command>),
+    /// Text the user typed. Not a keybinding — no keymap binds ordinary
+    /// letters — so the UI raises it directly from a key event's text.
+    InsertText(String),
     InsertNewline,
     InsertTab,
     DeleteBackward,
@@ -112,6 +121,8 @@ impl Command {
             MoveBufferEnd => "move-buffer-end",
             SetMark => "set-mark",
             SelectAll => "select-all",
+            Select(_) => "select",
+            InsertText(_) => "insert-text",
             InsertNewline => "insert-newline",
             InsertTab => "insert-tab",
             DeleteBackward => "delete-backward",
@@ -152,7 +163,30 @@ impl Command {
 
     /// Whether a command name requires an `arg` in its keymap binding.
     pub fn takes_arg(name: &str) -> bool {
-        name == "switch-profile"
+        matches!(name, "switch-profile" | "select" | "insert-text")
+    }
+
+    /// Whether this command only moves the cursor, leaving the text alone.
+    ///
+    /// [`Command::Select`] wraps one of these; anything else would mean
+    /// "extend the selection by deleting a word", which is not a thing.
+    pub fn is_movement(&self) -> bool {
+        use Command::*;
+        matches!(
+            self,
+            MoveLeft
+                | MoveRight
+                | MoveUp
+                | MoveDown
+                | MoveWordLeft
+                | MoveWordRight
+                | MoveLineStart
+                | MoveLineEnd
+                | MovePageUp
+                | MovePageDown
+                | MoveBufferStart
+                | MoveBufferEnd
+        )
     }
 
     /// Build a command from its keymap name and optional argument.
@@ -181,6 +215,27 @@ impl Command {
             "move-buffer-end" => MoveBufferEnd,
             "set-mark" => SetMark,
             "select-all" => SelectAll,
+            "select" => {
+                let movement = arg.ok_or_else(|| UnknownCommand {
+                    name: name.to_string(),
+                    reason: Reason::MissingArg,
+                })?;
+                let inner = Command::from_name(movement, None)?;
+                if !inner.is_movement() {
+                    return Err(UnknownCommand {
+                        name: name.to_string(),
+                        reason: Reason::NotAMovement,
+                    });
+                }
+                Select(Box::new(inner))
+            }
+            "insert-text" => {
+                let text = arg.ok_or_else(|| UnknownCommand {
+                    name: name.to_string(),
+                    reason: Reason::MissingArg,
+                })?;
+                InsertText(text.to_string())
+            }
             "insert-newline" => InsertNewline,
             "insert-tab" => InsertTab,
             "delete-backward" => DeleteBackward,
@@ -238,6 +293,8 @@ impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Command::SwitchProfile(p) => write!(f, "switch-profile({p})"),
+            Command::Select(inner) => write!(f, "select({inner})"),
+            Command::InsertText(text) => write!(f, "insert-text({text:?})"),
             other => f.write_str(other.name()),
         }
     }
@@ -248,6 +305,7 @@ enum Reason {
     NoSuchCommand,
     MissingArg,
     UnexpectedArg,
+    NotAMovement,
 }
 
 /// A keymap file named a command that does not exist, or misused its argument.
@@ -263,6 +321,11 @@ impl fmt::Display for UnknownCommand {
             Reason::NoSuchCommand => write!(f, "unknown command `{}`", self.name),
             Reason::MissingArg => write!(f, "command `{}` requires an `arg`", self.name),
             Reason::UnexpectedArg => write!(f, "command `{}` takes no `arg`", self.name),
+            Reason::NotAMovement => write!(
+                f,
+                "command `{}` can only wrap a movement command",
+                self.name
+            ),
         }
     }
 }

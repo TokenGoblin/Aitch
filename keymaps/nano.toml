@@ -285,6 +285,83 @@ chords = ["M-M"]
 command = "switch-profile"
 arg = "modern"
 
+# --- editor, selection: the same movements, dragging the mark along ----------
+# One `select` command wraps any movement, so a new movement never needs a
+# matching `select-` twin. The mark-based route (^6 / M-A then move) is nano's
+# own and still works; this is the shift+arrow one people arrive expecting.
+
+[[binding]]
+context = "editor"
+chords = ["Shift+Left"]
+command = "select"
+arg = "move-left"
+
+[[binding]]
+context = "editor"
+chords = ["Shift+Right"]
+command = "select"
+arg = "move-right"
+
+[[binding]]
+context = "editor"
+chords = ["Shift+Up"]
+command = "select"
+arg = "move-up"
+
+[[binding]]
+context = "editor"
+chords = ["Shift+Down"]
+command = "select"
+arg = "move-down"
+
+[[binding]]
+context = "editor"
+chords = ["Ctrl+Shift+Left"]
+command = "select"
+arg = "move-word-left"
+
+[[binding]]
+context = "editor"
+chords = ["Ctrl+Shift+Right"]
+command = "select"
+arg = "move-word-right"
+
+[[binding]]
+context = "editor"
+chords = ["Shift+Home"]
+command = "select"
+arg = "move-line-start"
+
+[[binding]]
+context = "editor"
+chords = ["Shift+End"]
+command = "select"
+arg = "move-line-end"
+
+[[binding]]
+context = "editor"
+chords = ["Shift+PgUp"]
+command = "select"
+arg = "move-page-up"
+
+[[binding]]
+context = "editor"
+chords = ["Shift+PgDn"]
+command = "select"
+arg = "move-page-down"
+
+[[binding]]
+context = "editor"
+chords = ["Ctrl+Shift+Home"]
+command = "select"
+arg = "move-buffer-start"
+
+[[binding]]
+context = "editor"
+chords = ["Ctrl+Shift+End"]
+command = "select"
+arg = "move-buffer-end"
+
 # ---------------------------------------------------------------- prompt ----
 
 [[binding]]

@@ -152,6 +152,8 @@ impl TextRenderer {
         y_offset: f32,
         theme: &Theme,
     ) {
+        self.push_selection(instances, atlas.white(), buffer, y_offset, theme);
+
         // Split the borrow so the atlas can rasterize while the layout is read.
         let TextRenderer {
             font_system,
@@ -178,6 +180,73 @@ impl TextRenderer {
         }
 
         self.push_cursor(instances, atlas.white(), buffer, y_offset, theme);
+    }
+
+    /// Draw the selection behind the text, one band per visible line.
+    ///
+    /// cosmic-text works out the span within a line, which is the part that is
+    /// awkward: a run may be bidirectional, and the selected range does not
+    /// have to line up with glyph boundaries.
+    fn push_selection(
+        &self,
+        instances: &mut Instances,
+        white: crate::render::atlas::Entry,
+        buffer: &Buffer,
+        y_offset: f32,
+        theme: &Theme,
+    ) {
+        let Some(range) = buffer.selection() else {
+            return;
+        };
+        let start = buffer.char_to_position(range.start);
+        let end = buffer.char_to_position(range.end);
+
+        for run in self.layout.layout_runs() {
+            let line = self.first_line + run.line_i;
+            if line < start.line || line > end.line {
+                continue;
+            }
+            let Some(text) = self.visible.get(run.line_i) else {
+                continue;
+            };
+
+            let from = if line == start.line {
+                char_to_byte(text, start.column)
+            } else {
+                0
+            };
+            let to = if line == end.line {
+                char_to_byte(text, end.column)
+            } else {
+                text.len()
+            };
+
+            let span = run.highlight(
+                cosmic_text::Cursor::new(run.line_i, from),
+                cosmic_text::Cursor::new(run.line_i, to),
+            );
+            let Some((x, width)) = span else {
+                continue;
+            };
+
+            // A selection that runs past the end of a line shows a sliver, so
+            // that selecting a line break is visible rather than invisible.
+            let width = if line < end.line {
+                width.max(self.cell_width * 0.5)
+            } else {
+                width
+            };
+            if width <= 0.0 {
+                continue;
+            }
+
+            instances.push_rect(
+                [x, run.line_top + y_offset],
+                [width, self.line_height()],
+                white,
+                theme.selection,
+            );
+        }
     }
 
     fn push_cursor(

@@ -17,11 +17,17 @@ impl Color {
     /// The surface is configured with an sRGB format, so a clear value has to
     /// be linear or the color comes out washed out.
     pub fn srgb(r: u8, g: u8, b: u8) -> Color {
+        Color::srgba(r, g, b, 1.0)
+    }
+
+    /// The same, with an alpha in 0..=1. Alpha is linear in sRGB, so it is
+    /// taken as given rather than run through the transfer function.
+    pub fn srgba(r: u8, g: u8, b: u8, a: f64) -> Color {
         Color {
             r: srgb_to_linear(r),
             g: srgb_to_linear(g),
             b: srgb_to_linear(b),
-            a: 1.0,
+            a,
         }
     }
 }
@@ -43,6 +49,8 @@ pub struct Theme {
     pub background: Color,
     pub foreground: Color,
     pub cursor: Color,
+    /// Drawn behind selected text, so it has to stay readable through it.
+    pub selection: Color,
 }
 
 impl Theme {
@@ -51,6 +59,7 @@ impl Theme {
             background: Color::srgb(0x14, 0x16, 0x1a),
             foreground: Color::srgb(0xd4, 0xd7, 0xdd),
             cursor: Color::srgb(0x7a, 0xa2, 0xf7),
+            selection: Color::srgba(0x3d, 0x59, 0xa1, 0.55),
         }
     }
 }
@@ -96,6 +105,12 @@ mod tests {
         let bg = Theme::dark().background;
         assert!(bg.r < 0.02 && bg.g < 0.02 && bg.b < 0.02);
         assert_eq!(bg.a, 1.0);
+    }
+
+    #[test]
+    fn the_selection_is_translucent_so_text_reads_through_it() {
+        let selection = Theme::dark().selection;
+        assert!(selection.a > 0.0 && selection.a < 1.0);
     }
 
     #[test]

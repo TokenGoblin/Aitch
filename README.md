@@ -8,8 +8,8 @@ context-sensitive shortcuts, always visible, generated from the active keymap
 rather than hardcoded. Prompts happen on a line above the footer. No modal
 dialogs, no floating windows.
 
-**Status: Phase 1.** Text renders and you can move around it. Editing is Phase
-2, the footer Phase 3, folder mode Phase 4. See [`PLAN.md`](PLAN.md).
+**Status: Phase 2.** It edits files. The footer and prompt line are Phase 3,
+folder mode Phase 4. See [`PLAN.md`](PLAN.md).
 
 ## Build and run
 
@@ -20,14 +20,19 @@ cargo test --workspace
 cargo run -p aitch -- some-file.txt
 ```
 
-Arrow keys, Home/End, PgUp/PgDn, Ctrl+arrows for words, Ctrl+Home/End for the
-file. Click to place the cursor, scroll with the wheel or a touchpad.
+Type. Arrow keys, Home/End, PgUp/PgDn, Ctrl+arrows for words, Ctrl+Home/End
+for the file. Shift with any of those selects, or `^6` sets a mark the way
+nano does. `^K` cuts a line and `^U` puts it back, `^O` writes, `^X` exits,
+`M-U` and `M-E` undo and redo.
+
+Files keep the encoding and line endings they arrived with. Open a UTF-16 file
+with CRLF endings, change one word, save, and only that word differs.
 
 ## Layout
 
 ```
 crates/
-  aitch-core/     rope, cursor, commands, keymap  — zero GUI dependencies
+  aitch-core/     rope, edits, undo, commands, keymap, file IO — no GUI deps
   aitch-ui/       winit + wgpu + cosmic-text
   aitch-harness/  headless driver: feed chords, assert on state
   aitch/          the binary: argument parsing and wiring
@@ -56,7 +61,7 @@ Two profiles ship, both just data:
 ## Testing
 
 ```
-cargo test --workspace                  # unit, harness and offscreen render tests
+cargo test --workspace                  # unit, golden-file, harness, render
 cargo bench -p aitch-core               # the PLAN.md §6 budgets
 cargo run -p aitch-ui --example dump_frame -- file.rs frame.raw
 ```

@@ -45,7 +45,15 @@ fn main() {
         std::process::exit(2);
     };
     let text_src = std::fs::read_to_string(&input).expect("could not read the input file");
-    let buffer = Buffer::from_str(&text_src);
+    let mut buffer = Buffer::from_str(&text_src);
+    // A third argument selects that many characters, so the highlight can be
+    // eyeballed too.
+    if let Some(count) = args.next().and_then(|n| n.parse::<usize>().ok()) {
+        buffer.set_mark();
+        for _ in 0..count {
+            buffer.move_right();
+        }
+    }
 
     let mut atlas = Atlas::new(&device, &queue, 1024);
     let mut pipeline = QuadPipeline::new(&device, FORMAT, atlas.bind_group_layout());

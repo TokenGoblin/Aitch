@@ -1,7 +1,7 @@
-//! The text buffer: a rope, a cursor, and the movement over both.
+//! The text buffer: a rope, a cursor, a selection, and everything done to them.
 //!
-//! Phase 1 reads and navigates. Nothing here mutates the text — that arrives in
-//! Phase 2 through `edit.rs`, and every mutation will go through it.
+//! Every mutation here goes through `edit.rs` and is recorded in `history.rs`.
+//! Nothing else in the crate touches the rope's mutating methods.
 //!
 //! # Positions
 //!
@@ -18,10 +18,14 @@
 //! than pulling in a second segmentation crate to disagree with it.
 
 use std::io;
+use std::ops::Range;
 
 use ropey::{Rope, RopeSlice};
 
 use crate::command::Command;
+use crate::edit::{self, Edit};
+use crate::history::{History, Kind};
+use crate::line_ending::LineEnding;
 
 /// A line and column, both zero-based. The column excludes the line break.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -43,7 +47,8 @@ pub enum Applied {
     Changed,
     /// The command ran and nothing changed (cursor already at the end, say).
     Unchanged,
-    /// This command is not a Phase 1 movement. The caller decides what next.
+    /// Not the buffer's to run — saving, quitting, the system clipboard.
+    /// The caller decides what happens next.
     Unhandled,
 }
 
@@ -133,11 +138,23 @@ struct Cursor {
     goal_column: Option<usize>,
 }
 
-/// A rope, a cursor, and the movement over both.
+/// A rope, a cursor, a selection, and everything done to them.
 #[derive(Debug, Clone)]
 pub struct Buffer {
     text: Rope,
     cursor: Cursor,
+    /// The fixed end of the selection. `None` means nothing is selected.
+    anchor: Option<usize>,
+    history: History,
+    /// What a newly typed newline inserts. Existing line breaks are stored
+    /// verbatim and never rewritten, so a mixed file stays mixed.
+    line_ending: LineEnding,
+    /// The cut buffer behind nano's `^K` and `^U`. Not the system clipboard:
+    /// that belongs to the UI, since only the UI can talk to a window server.
+    cut_buffer: String,
+    /// Whether the last command was also a cut, so consecutive cuts pile up
+    /// into one cut buffer the way nano's do.
+    cutting: bool,
 }
 
 impl Buffer {
@@ -153,9 +170,15 @@ impl Buffer {
     }
 
     fn from_rope(text: Rope) -> Buffer {
+        let line_ending = LineEnding::dominant(&text);
         Buffer {
             text,
             cursor: Cursor::default(),
+            anchor: None,
+            history: History::new(),
+            line_ending,
+            cut_buffer: String::new(),
+            cutting: false,
         }
     }
 
@@ -229,13 +252,39 @@ impl Buffer {
     }
 
     /// Move the cursor to a position, clamping it into the buffer.
+    ///
+    /// An explicit placement — a click, a goto — drops the selection. Movement
+    /// commands do not, because in nano the mark stays set while you move and
+    /// that is what makes the selection grow.
     pub fn set_cursor(&mut self, position: Position) -> bool {
+        let char_index = self.position_to_char(position);
+        self.anchor = None;
+        self.set_cursor_char(char_index)
+    }
+
+    /// Move the cursor without disturbing the mark, so a mouse drag extends
+    /// the selection from wherever the press landed.
+    pub fn set_cursor_extending(&mut self, position: Position) -> bool {
         let char_index = self.position_to_char(position);
         self.set_cursor_char(char_index)
     }
 
+    /// True if `index` falls between the CR and the LF of a CRLF pair.
+    ///
+    /// The cursor must never rest there: ropey counts it as one line break, so
+    /// a cursor inside it has a column past the end of its own line.
+    fn inside_crlf(&self, index: usize) -> bool {
+        index > 0
+            && index < self.text.len_chars()
+            && self.text.char(index - 1) == '\r'
+            && self.text.char(index) == '\n'
+    }
+
     fn set_cursor_char(&mut self, char_index: usize) -> bool {
-        let clamped = char_index.min(self.text.len_chars());
+        let mut clamped = char_index.min(self.text.len_chars());
+        if self.inside_crlf(clamped) {
+            clamped -= 1;
+        }
         let moved = clamped != self.cursor.char_index;
         self.cursor.char_index = clamped;
         self.cursor.goal_column = None;
@@ -245,13 +294,19 @@ impl Buffer {
     // -- horizontal movement ----------------------------------------------
 
     pub fn move_left(&mut self) -> bool {
-        let target = self.cursor.char_index.saturating_sub(1);
+        let mut target = self.cursor.char_index.saturating_sub(1);
+        if self.inside_crlf(target) {
+            target -= 1;
+        }
         self.set_cursor_char(target)
     }
 
     pub fn move_right(&mut self) -> bool {
-        let target = self.cursor.char_index.saturating_add(1);
-        self.set_cursor_char(target)
+        let mut target = self.cursor.char_index.saturating_add(1);
+        if self.inside_crlf(target) {
+            target += 1;
+        }
+        self.set_cursor_char(target.min(self.text.len_chars()))
     }
 
     pub fn move_line_start(&mut self) -> bool {
@@ -338,15 +393,278 @@ impl Buffer {
         moved
     }
 
+    // -- selection ---------------------------------------------------------
+
+    pub fn has_selection(&self) -> bool {
+        self.selection().is_some()
+    }
+
+    /// The selected character range, low end first, or `None`.
+    ///
+    /// An anchor sitting exactly on the cursor is a mark with nothing selected
+    /// yet, which is a real state in nano: `^6` and then no movement.
+    pub fn selection(&self) -> Option<Range<usize>> {
+        let anchor = self.anchor?;
+        let cursor = self.cursor.char_index;
+        if anchor == cursor {
+            return None;
+        }
+        Some(anchor.min(cursor)..anchor.max(cursor))
+    }
+
+    pub fn selected_text(&self) -> Option<String> {
+        let range = self.selection()?;
+        Some(self.text.slice(range).to_string())
+    }
+
+    /// nano's `M-A` / `^6`: set the mark here, or drop it if already set.
+    pub fn set_mark(&mut self) -> bool {
+        self.anchor = match self.anchor {
+            Some(_) => None,
+            None => Some(self.cursor.char_index),
+        };
+        true
+    }
+
+    pub fn clear_selection(&mut self) -> bool {
+        let had = self.anchor.is_some();
+        self.anchor = None;
+        had
+    }
+
+    pub fn select_all(&mut self) -> bool {
+        if self.text.len_chars() == 0 {
+            return false;
+        }
+        self.set_cursor_char(self.text.len_chars());
+        self.anchor = Some(0);
+        true
+    }
+
+    /// Run a movement, dragging the selection with it.
+    fn select_with(&mut self, movement: &Command, viewport: &Viewport) -> Applied {
+        if self.anchor.is_none() {
+            self.anchor = Some(self.cursor.char_index);
+        }
+        let anchor = self.anchor;
+        let applied = self.apply(movement, viewport);
+        // The movement must not drop the mark it is extending from.
+        self.anchor = anchor;
+        applied
+    }
+
+    // -- editing -----------------------------------------------------------
+
+    /// What a newly typed newline inserts. Existing breaks keep their own.
+    pub fn line_ending(&self) -> LineEnding {
+        self.line_ending
+    }
+
+    pub fn set_line_ending(&mut self, line_ending: LineEnding) {
+        self.line_ending = line_ending;
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.history.is_dirty()
+    }
+
+    /// Note that the buffer has been written to disk.
+    pub fn mark_saved(&mut self) {
+        self.history.mark_saved();
+    }
+
+    /// Insert text at the cursor, replacing the selection if there is one.
+    pub fn insert(&mut self, text: &str) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        let cursor_before = self.cursor.char_index;
+        let (at, removed) = self.take_selection();
+        // Typing over a selection is one discrete step rather than part of a
+        // run: undo should hand the replaced text back in one go.
+        let kind = if removed.is_empty() {
+            Kind::Insert
+        } else {
+            Kind::Discrete
+        };
+        self.apply_edit(Edit::replace(at, removed, text), kind, cursor_before)
+    }
+
+    /// Insert the file's line ending at the cursor.
+    pub fn insert_newline(&mut self) -> bool {
+        let text = self.line_ending.as_str();
+        self.insert(text)
+    }
+
+    /// Backspace. Deletes a whole CRLF rather than splitting it in half.
+    pub fn delete_backward(&mut self) -> bool {
+        if self.has_selection() {
+            return self.delete_selection();
+        }
+        let end = self.cursor.char_index;
+        if end == 0 {
+            return false;
+        }
+        let start =
+            if end >= 2 && self.text.char(end - 1) == '\n' && self.text.char(end - 2) == '\r' {
+                end - 2
+            } else {
+                end - 1
+            };
+        let removed = self.text.slice(start..end).to_string();
+        self.apply_edit(Edit::delete(start, removed), Kind::DeleteBackward, end)
+    }
+
+    /// Delete forward, treating a CRLF as one thing in the same way.
+    pub fn delete_forward(&mut self) -> bool {
+        if self.has_selection() {
+            return self.delete_selection();
+        }
+        let at = self.cursor.char_index;
+        if at >= self.text.len_chars() {
+            return false;
+        }
+        let end = if at + 1 < self.text.len_chars()
+            && self.text.char(at) == '\r'
+            && self.text.char(at + 1) == '\n'
+        {
+            at + 2
+        } else {
+            at + 1
+        };
+        let removed = self.text.slice(at..end).to_string();
+        self.apply_edit(Edit::delete(at, removed), Kind::DeleteForward, at)
+    }
+
+    /// Remove the selection, if there is one.
+    pub fn delete_selection(&mut self) -> bool {
+        let cursor_before = self.cursor.char_index;
+        let (at, removed) = self.take_selection();
+        self.apply_edit(Edit::delete(at, removed), Kind::Discrete, cursor_before)
+    }
+
+    /// nano's `^K`: cut the selection, or the whole line if there is none.
+    ///
+    /// Consecutive cuts pile into one cut buffer, so three cuts and an uncut
+    /// move three lines. Anything else in between starts the buffer over.
+    pub fn cut(&mut self) -> bool {
+        let cursor_before = self.cursor.char_index;
+        let (at, removed) = if self.has_selection() {
+            self.take_selection()
+        } else {
+            let line = self.cursor().line;
+            let start = self.text.line_to_char(line);
+            let end = start + self.line(line).len_chars();
+            (start, self.text.slice(start..end).to_string())
+        };
+
+        if removed.is_empty() {
+            return false;
+        }
+        if !self.cutting {
+            self.cut_buffer.clear();
+        }
+        self.cut_buffer.push_str(&removed);
+        let cut = self.apply_edit(Edit::delete(at, removed), Kind::Discrete, cursor_before);
+        self.cutting = true;
+        cut
+    }
+
+    /// nano's `^U`: paste the cut buffer at the cursor, keeping it for again.
+    pub fn uncut(&mut self) -> bool {
+        if self.cut_buffer.is_empty() {
+            return false;
+        }
+        let cursor_before = self.cursor.char_index;
+        let text = std::mem::take(&mut self.cut_buffer);
+        let (at, removed) = self.take_selection();
+        let pasted = self.apply_edit(
+            Edit::replace(at, removed, text.clone()),
+            Kind::Discrete,
+            cursor_before,
+        );
+        self.cut_buffer = text;
+        pasted
+    }
+
+    pub fn cut_buffer(&self) -> &str {
+        &self.cut_buffer
+    }
+
+    pub fn undo(&mut self) -> bool {
+        let Some(transaction) = self.history.undo() else {
+            return false;
+        };
+        edit::apply(&mut self.text, &transaction.edit.inverted());
+        self.anchor = None;
+        self.cursor.char_index = transaction.cursor_before.min(self.text.len_chars());
+        self.cursor.goal_column = None;
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        let Some(transaction) = self.history.redo() else {
+            return false;
+        };
+        edit::apply(&mut self.text, &transaction.edit);
+        self.anchor = None;
+        self.cursor.char_index = transaction.cursor_after.min(self.text.len_chars());
+        self.cursor.goal_column = None;
+        true
+    }
+
+    /// What an edit should replace: the selection if there is one, otherwise
+    /// an empty run at the cursor. Drops the mark either way.
+    fn take_selection(&mut self) -> (usize, String) {
+        match self.selection() {
+            Some(range) => {
+                let text = self.text.slice(range.clone()).to_string();
+                self.anchor = None;
+                (range.start, text)
+            }
+            None => {
+                self.anchor = None;
+                (self.cursor.char_index, String::new())
+            }
+        }
+    }
+
+    /// The one path from an [`Edit`] to the buffer: apply it, record it, and
+    /// leave the cursor where the edit ends.
+    fn apply_edit(&mut self, edit: Edit, kind: Kind, cursor_before: usize) -> bool {
+        if edit.is_empty() {
+            return false;
+        }
+        let cursor_after = edit.end();
+        edit::apply(&mut self.text, &edit);
+        self.history.record(edit, kind, cursor_before, cursor_after);
+        self.cursor.char_index = cursor_after;
+        self.cursor.goal_column = None;
+        self.anchor = None;
+        true
+    }
+
     // -- command dispatch --------------------------------------------------
 
-    /// Apply a movement command.
+    /// Run a command against the buffer.
     ///
-    /// Phase 1 handles movement and nothing else; everything else reports
-    /// [`Applied::Unhandled`] rather than pretending to have done something.
-    /// The viewport is not scrolled here — call [`Buffer::follow_cursor`].
+    /// Commands the buffer has no business handling — quitting, saving, the
+    /// system clipboard — report [`Applied::Unhandled`] so the caller deals
+    /// with them, rather than being swallowed silently here.
+    /// The viewport is not scrolled: call [`Buffer::follow_cursor`].
     pub fn apply(&mut self, command: &Command, viewport: &Viewport) -> Applied {
-        let moved = match command {
+        // A cut only counts as consecutive if nothing happened in between.
+        if !matches!(command, Command::Cut) {
+            self.cutting = false;
+        }
+
+        // Moving the cursor ends the undo run in progress, so the next
+        // character typed starts a new step instead of joining the last one.
+        if command.is_movement() {
+            self.history.break_run();
+        }
+
+        let changed = match command {
             Command::MoveLeft => self.move_left(),
             Command::MoveRight => self.move_right(),
             Command::MoveUp => self.move_up(),
@@ -359,10 +677,26 @@ impl Buffer {
             Command::MovePageDown => self.move_page_down(viewport),
             Command::MoveBufferStart => self.move_buffer_start(),
             Command::MoveBufferEnd => self.move_buffer_end(),
+
+            Command::Select(movement) => return self.select_with(movement, viewport),
+            Command::SetMark => self.set_mark(),
+            Command::SelectAll => self.select_all(),
+
+            Command::InsertText(text) => self.insert(text),
+            Command::InsertNewline => self.insert_newline(),
+            // Tab width and expand-tabs are `aitchrc` settings, in Phase 7.
+            Command::InsertTab => self.insert("\t"),
+            Command::DeleteBackward => self.delete_backward(),
+            Command::DeleteForward => self.delete_forward(),
+            Command::Cut => self.cut(),
+            Command::Uncut => self.uncut(),
+            Command::Undo => self.undo(),
+            Command::Redo => self.redo(),
+
             _ => return Applied::Unhandled,
         };
 
-        if moved {
+        if changed {
             Applied::Changed
         } else {
             Applied::Unchanged
@@ -618,12 +952,342 @@ mod tests {
     }
 
     #[test]
-    fn phase_one_admits_what_it_cannot_do() {
+    fn the_buffer_admits_what_is_not_its_business() {
         let mut b = sample();
         let v = Viewport::new(10);
-        // Editing is Phase 2. Reporting Unhandled is the honest answer.
-        assert_eq!(b.apply(&Command::Cut, &v), Applied::Unhandled);
-        assert_eq!(b.apply(&Command::WriteOut, &v), Applied::Unhandled);
+        // Saving, quitting and the system clipboard belong to the caller.
+        // Reporting Unhandled is the honest answer, and lets the UI act.
+        for command in [
+            Command::WriteOut,
+            Command::Quit,
+            Command::Copy,
+            Command::Paste,
+            Command::WhereIs,
+        ] {
+            assert_eq!(
+                b.apply(&command, &v),
+                Applied::Unhandled,
+                "{command} is not the buffer's to handle"
+            );
+        }
+    }
+
+    // -- editing -----------------------------------------------------------
+
+    #[test]
+    fn typing_inserts_at_the_cursor() {
+        let mut b = Buffer::from_str("hello world");
+        b.set_cursor(Position::new(0, 5));
+        assert!(b.insert(","));
+        assert_eq!(b.text().to_string(), "hello, world");
+        assert_eq!(b.cursor(), Position::new(0, 6));
+    }
+
+    #[test]
+    fn backspace_and_delete_take_one_character_each() {
+        let mut b = Buffer::from_str("abcd");
+        b.set_cursor(Position::new(0, 2));
+
+        assert!(b.delete_backward());
+        assert_eq!(b.text().to_string(), "acd");
+        assert_eq!(b.cursor(), Position::new(0, 1));
+
+        assert!(b.delete_forward());
+        assert_eq!(b.text().to_string(), "ad");
+        assert_eq!(b.cursor(), Position::new(0, 1));
+    }
+
+    #[test]
+    fn deleting_at_the_edges_does_nothing() {
+        let mut b = Buffer::from_str("abc");
+        b.move_buffer_start();
+        assert!(!b.delete_backward());
+        b.move_buffer_end();
+        assert!(!b.delete_forward());
+        assert_eq!(b.text().to_string(), "abc");
+    }
+
+    #[test]
+    fn a_typed_newline_uses_the_file_line_ending() {
+        let mut b = Buffer::from_str("alpha\r\nbeta\r\n");
+        assert_eq!(b.line_ending(), LineEnding::CrLf);
+        b.set_cursor(Position::new(0, 5));
+        b.insert_newline();
+        assert_eq!(b.text().to_string(), "alpha\r\n\r\nbeta\r\n");
+    }
+
+    #[test]
+    fn backspace_over_a_crlf_takes_both_halves() {
+        let mut b = Buffer::from_str("one\r\ntwo\r\n");
+        b.set_cursor(Position::new(1, 0));
+        assert!(b.delete_backward());
+        assert_eq!(b.text().to_string(), "onetwo\r\n");
+    }
+
+    #[test]
+    fn delete_forward_over_a_crlf_takes_both_halves() {
+        let mut b = Buffer::from_str("one\r\ntwo\r\n");
+        b.set_cursor(Position::new(0, 3));
+        assert!(b.delete_forward());
+        assert_eq!(b.text().to_string(), "onetwo\r\n");
+    }
+
+    // -- selection ---------------------------------------------------------
+
+    #[test]
+    fn the_mark_and_the_cursor_bound_the_selection() {
+        let mut b = Buffer::from_str("hello world");
+        b.set_cursor(Position::new(0, 0));
+        assert!(!b.has_selection(), "a mark on its own selects nothing");
+
+        b.set_mark();
+        assert!(!b.has_selection(), "still nothing until the cursor moves");
+
+        for _ in 0..5 {
+            b.move_right();
+        }
+        assert_eq!(b.selected_text().as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn the_mark_survives_movement_the_way_nano_does() {
+        let mut b = Buffer::from_str("hello world");
+        b.set_mark();
+        let v = Viewport::new(10);
+        b.apply(&Command::MoveWordRight, &v);
+        assert!(b.has_selection(), "movement must not drop the mark");
+    }
+
+    #[test]
+    fn set_mark_toggles_off_again() {
+        let mut b = Buffer::from_str("hello");
+        b.set_mark();
+        b.move_right();
+        assert!(b.has_selection());
+        b.set_mark();
+        assert!(!b.has_selection());
+    }
+
+    #[test]
+    fn select_wraps_a_movement_and_starts_its_own_mark() {
+        let mut b = Buffer::from_str("hello world");
+        let v = Viewport::new(10);
+        let select_right = Command::Select(Box::new(Command::MoveWordRight));
+
+        b.apply(&select_right, &v);
+        assert_eq!(b.selected_text().as_deref(), Some("hello "));
+
+        // A second one extends the same selection rather than restarting it.
+        b.apply(&select_right, &v);
+        assert_eq!(b.selected_text().as_deref(), Some("hello world"));
+    }
+
+    #[test]
+    fn a_click_drops_the_selection() {
+        let mut b = Buffer::from_str("hello world");
+        b.set_mark();
+        b.move_word_right();
+        assert!(b.has_selection());
+
+        b.set_cursor(Position::new(0, 3));
+        assert!(!b.has_selection());
+    }
+
+    #[test]
+    fn typing_replaces_the_selection() {
+        let mut b = Buffer::from_str("hello world");
+        b.set_mark();
+        for _ in 0..5 {
+            b.move_right();
+        }
+        assert!(b.insert("goodbye"));
+        assert_eq!(b.text().to_string(), "goodbye world");
+        assert!(!b.has_selection());
+    }
+
+    #[test]
+    fn backspace_over_a_selection_removes_all_of_it() {
+        let mut b = Buffer::from_str("hello world");
+        b.select_all();
+        assert!(b.delete_backward());
+        assert_eq!(b.text().to_string(), "");
+    }
+
+    #[test]
+    fn select_all_covers_the_whole_buffer() {
+        let mut b = Buffer::from_str("one\ntwo\n");
+        assert!(b.select_all());
+        assert_eq!(b.selected_text().as_deref(), Some("one\ntwo\n"));
+
+        let mut empty = Buffer::new();
+        assert!(!empty.select_all(), "nothing to select");
+    }
+
+    // -- cut buffer --------------------------------------------------------
+
+    #[test]
+    fn cut_takes_the_whole_line_including_its_break() {
+        let mut b = Buffer::from_str("one\ntwo\nthree\n");
+        b.set_cursor(Position::new(1, 1));
+        assert!(b.cut());
+        assert_eq!(b.text().to_string(), "one\nthree\n");
+        assert_eq!(b.cut_buffer(), "two\n");
+    }
+
+    #[test]
+    fn consecutive_cuts_pile_up_the_way_nano_does() {
+        let mut b = Buffer::from_str("one\ntwo\nthree\nfour\n");
+        let v = Viewport::new(10);
+        b.set_cursor(Position::new(0, 0));
+
+        b.apply(&Command::Cut, &v);
+        b.apply(&Command::Cut, &v);
+        assert_eq!(b.cut_buffer(), "one\ntwo\n");
+        assert_eq!(b.text().to_string(), "three\nfour\n");
+
+        // Anything else in between starts the cut buffer over.
+        b.apply(&Command::MoveDown, &v);
+        b.apply(&Command::Cut, &v);
+        assert_eq!(b.cut_buffer(), "four\n");
+    }
+
+    #[test]
+    fn uncut_pastes_the_cut_buffer_and_keeps_it() {
+        let mut b = Buffer::from_str("one\ntwo\n");
+        b.set_cursor(Position::new(0, 0));
+        b.cut();
+
+        b.move_buffer_end();
+        assert!(b.uncut());
+        assert_eq!(b.text().to_string(), "two\none\n");
+        assert_eq!(b.cut_buffer(), "one\n", "the cut buffer survives a paste");
+
+        assert!(b.uncut(), "and can be pasted again");
+        assert_eq!(b.text().to_string(), "two\none\none\n");
+    }
+
+    #[test]
+    fn cutting_a_selection_takes_only_the_selection() {
+        let mut b = Buffer::from_str("hello world");
+        b.set_mark();
+        for _ in 0..5 {
+            b.move_right();
+        }
+        assert!(b.cut());
+        assert_eq!(b.cut_buffer(), "hello");
+        assert_eq!(b.text().to_string(), " world");
+    }
+
+    // -- undo --------------------------------------------------------------
+
+    #[test]
+    fn a_run_of_typing_undoes_in_one_step() {
+        let mut b = Buffer::new();
+        for c in "hello".chars() {
+            b.insert(&c.to_string());
+        }
+        assert_eq!(b.text().to_string(), "hello");
+
+        assert!(b.undo());
+        assert_eq!(b.text().to_string(), "");
+        assert_eq!(b.cursor(), Position::new(0, 0));
+
+        assert!(b.redo());
+        assert_eq!(b.text().to_string(), "hello");
+    }
+
+    #[test]
+    fn moving_the_cursor_splits_the_undo_run() {
+        let mut b = Buffer::new();
+        let v = Viewport::new(10);
+        for c in "abc".chars() {
+            b.apply(&Command::InsertText(c.to_string()), &v);
+        }
+        b.apply(&Command::MoveLeft, &v);
+        for c in "XY".chars() {
+            b.apply(&Command::InsertText(c.to_string()), &v);
+        }
+        assert_eq!(b.text().to_string(), "abXYc");
+
+        b.undo();
+        assert_eq!(b.text().to_string(), "abc", "only the second run went");
+        b.undo();
+        assert_eq!(b.text().to_string(), "");
+    }
+
+    #[test]
+    fn undo_restores_a_replaced_selection_in_one_go() {
+        let mut b = Buffer::from_str("hello world");
+        b.select_all();
+        b.insert("gone");
+        assert_eq!(b.text().to_string(), "gone");
+
+        assert!(b.undo());
+        assert_eq!(b.text().to_string(), "hello world");
+    }
+
+    #[test]
+    fn undo_at_the_bottom_of_the_stack_does_nothing() {
+        let mut b = Buffer::from_str("untouched");
+        assert!(!b.undo());
+        assert!(!b.redo());
+        assert_eq!(b.text().to_string(), "untouched");
+    }
+
+    #[test]
+    fn undoing_every_edit_gets_the_original_text_back() {
+        let original = "one\ntwo\nthree\n";
+        let mut b = Buffer::from_str(original);
+        let v = Viewport::new(10);
+
+        b.set_cursor(Position::new(1, 0));
+        b.apply(&Command::InsertText("x".to_string()), &v);
+        b.apply(&Command::Cut, &v);
+        b.apply(&Command::MoveDown, &v);
+        b.apply(&Command::Uncut, &v);
+        b.apply(&Command::DeleteForward, &v);
+        b.apply(&Command::InsertNewline, &v);
+        assert_ne!(b.text().to_string(), original);
+
+        while b.undo() {}
+        assert_eq!(b.text().to_string(), original);
+    }
+
+    // -- dirtiness ---------------------------------------------------------
+
+    #[test]
+    fn a_freshly_loaded_buffer_is_clean() {
+        let b = Buffer::from_str("hello");
+        assert!(!b.is_dirty());
+    }
+
+    #[test]
+    fn editing_dirties_and_saving_cleans() {
+        let mut b = Buffer::from_str("hello");
+        b.insert("!");
+        assert!(b.is_dirty());
+
+        b.mark_saved();
+        assert!(!b.is_dirty());
+
+        b.insert("?");
+        assert!(b.is_dirty());
+        b.undo();
+        assert!(!b.is_dirty(), "back at what is on disk");
+    }
+
+    #[test]
+    fn movement_alone_does_not_dirty_a_buffer() {
+        let mut b = Buffer::from_str("one\ntwo\n");
+        let v = Viewport::new(10);
+        for command in [
+            Command::MoveDown,
+            Command::MoveLineEnd,
+            Command::MoveBufferStart,
+        ] {
+            b.apply(&command, &v);
+        }
+        assert!(!b.is_dirty());
     }
 
     #[test]

@@ -232,3 +232,80 @@ fn the_cursor_moves_with_the_buffer() {
         "the cursor did not move down: {top:?} then {moved:?}"
     );
 }
+
+#[test]
+fn a_selection_is_drawn_behind_the_text() {
+    let Some(gpu) = gpu() else {
+        eprintln!("SKIPPED: no GPU adapter on this machine");
+        return;
+    };
+
+    let theme = Theme::dark();
+    let text = "hello world\nsecond line\n";
+
+    let plain = draw(&gpu, &Buffer::from_str(text), &theme);
+    let (plain_lit, _) = lit_pixels(&plain);
+
+    let mut selected = Buffer::from_str(text);
+    selected.select_all();
+    let highlighted = draw(&gpu, &selected, &theme);
+    let (selected_lit, rows) = lit_pixels(&highlighted);
+
+    // The selection is a translucent band behind the glyphs, so a great many
+    // more pixels are brighter than the background than before.
+    assert!(
+        selected_lit > plain_lit * 3,
+        "selection barely showed: {plain_lit} lit pixels became {selected_lit}"
+    );
+
+    // And it covers whole lines rather than only where glyphs are.
+    let first = *rows.first().expect("something was drawn");
+    let last = *rows.last().expect("something was drawn");
+    assert!(
+        last - first > 20,
+        "the highlight should span both lines, not one band"
+    );
+}
+
+/// Leftmost and rightmost lit column on a given row, if any.
+fn lit_span(pixels: &[u8], y: usize) -> Option<(usize, usize)> {
+    let mut first = None;
+    let mut last = None;
+    for x in 0..WIDTH as usize {
+        let i = (y * WIDTH as usize + x) * 4;
+        if pixels[i] > 0x40 || pixels[i + 1] > 0x40 || pixels[i + 2] > 0x40 {
+            first.get_or_insert(x);
+            last = Some(x);
+        }
+    }
+    Some((first?, last?))
+}
+
+#[test]
+fn the_first_selected_line_highlights_from_its_start() {
+    let Some(gpu) = gpu() else {
+        eprintln!("SKIPPED: no GPU adapter on this machine");
+        return;
+    };
+
+    let theme = Theme::dark();
+    let mut buffer = Buffer::from_str("aaaaaaaa\nbbbbbbbb\ncccccccc\n");
+    // Select from the very start, across into the third line.
+    buffer.set_mark();
+    for _ in 0..20 {
+        buffer.move_right();
+    }
+    let pixels = draw(&gpu, &buffer, &theme);
+
+    let (_, rows) = lit_pixels(&pixels);
+    let top = *rows.first().expect("something was drawn");
+
+    // The first row of the first line must be lit from near the left margin,
+    // not just where a line-break sliver would sit at the far right.
+    let (first, last) = lit_span(&pixels, top + 2).expect("the first line has ink");
+    assert!(
+        first < 8,
+        "the first selected line starts at x={first}, so its highlight is missing"
+    );
+    assert!(last > 40, "the highlight should cover the whole line");
+}

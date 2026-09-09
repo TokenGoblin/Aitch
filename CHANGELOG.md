@@ -4,6 +4,73 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Phase 2 — Actually editing
+
+Added:
+
+- `edit.rs`: one primitive for every mutation — replace a run of text at a
+  character index with another. Insert, delete and replace are the same
+  operation with one side empty, so the inverse of an edit is the edit with
+  its sides swapped. The only file that calls a mutating ropey method.
+- `history.rs`: undo and redo with coalescing. A run of typed characters is one
+  step; a run of backspaces is another; a newline ends a run from both sides.
+  Dirtiness is undo depth against the depth at the last save, so undoing back
+  to a saved state reads as clean — and a save point stranded in the redo
+  stack stops counting.
+- `fileio.rs`: encoding detection (BOM, UTF-16 LE/BE, UTF-8, Latin-1 fallback),
+  byte-exact round-trip, and atomic save via a temporary file and a rename.
+- `line_ending.rs`: which ending a file mostly uses. Existing breaks are stored
+  verbatim and never rewritten; only a newly typed newline consults this.
+- `document.rs`: a buffer plus the path and encoding a save needs.
+- Selection: nano's mark (`^6` / `M-A` then move) and shift+arrows, drawn as a
+  translucent band behind the text. Mouse press-and-drag selects.
+- Cut and uncut with nano's accumulate-on-consecutive-cuts behavior, and the
+  system clipboard via `arboard`.
+- `aitch-harness` now runs commands against a real buffer, so a chord sequence
+  can be asserted on end to end.
+- 15 golden-file fixtures and a round-trip suite over all of them.
+
+Decisions:
+
+- **Encoding detection is hand-rolled, with no new dependency.** The supported
+  set is the one PLAN.md names, and it refuses to guess beyond it: a wrong
+  charset guess would be written back as fact on the next save. `chardetng`
+  would add legacy codepages nobody asked for and that failure mode with them.
+- **A mixed-ending file stays mixed.** Line breaks are stored as read. The
+  alternative — normalize in memory, write the dominant ending back — rewrites
+  lines the user never touched and fails the byte-identical criterion.
+- **`Command` grew two variants**, both agreed before writing them:
+  `InsertText(String)` so typed text reaches the buffer as a command rather
+  than by the UI reaching in, and `Select(Box<Command>)` so one wrapper covers
+  shift+every-movement instead of a dozen `select-*` twins.
+- The cursor can no longer land between the CR and the LF of a CRLF. Ropey
+  counts the pair as one break, so a cursor inside it has a column past the end
+  of its own line — a Phase 1 bug that only CRLF files would have shown.
+- `document.rs` is not in PLAN.md §3's module list. Phase 2 needs somewhere to
+  hold the path and encoding a save depends on; Phase 4's `workspace.rs` will
+  own a set of these.
+
+Acceptance:
+
+- Load, one edit, save is byte-identical except the edit, across 15 fixtures:
+  LF, CRLF, CR and mixed endings; UTF-8 with and without BOM; UTF-16 LE and BE
+  with and without BOM; UTF-16 with a surrogate pair; UTF-16 with CRLF inside
+  it; Latin-1; a file with no trailing newline; an empty file.
+- Saving an untouched file rewrites zero bytes.
+- A Latin-1 file that gains a character Latin-1 cannot hold refuses to save
+  and leaves the original intact, rather than writing a `?` over the data.
+
+Not done:
+
+- The exit prompt has nowhere to live: the prompt line is Phase 3. Quitting a
+  modified buffer arms a confirmation and puts the warning in the window
+  title, which is also carrying the modified marker and transient messages
+  until Phase 3 builds a status line.
+- Saving a buffer with no filename needs a prompt to ask for one, so it
+  reports "this buffer has no filename yet" instead.
+- Double-click word and triple-click line selection.
+- Tab still inserts a literal tab; tab width and expand-tabs are Phase 7.
+
 ### Phase 1 — Text on screen
 
 Added:

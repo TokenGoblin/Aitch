@@ -3,12 +3,10 @@
 //! Phase 7 grows this into the real command line (`+LINE`, stdin piping,
 //! `$EDITOR` compatibility).
 
-use std::fs::File;
-use std::io::BufReader;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use aitch_core::Buffer;
+use aitch_core::Document;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -22,8 +20,8 @@ Options:
     -h, --help       Show this message
     -V, --version    Show the version
 
-Phase 1 opens a file and lets you move around it. Editing comes with Phase 2,
-folders with Phase 4; see PLAN.md.
+A FILE that does not exist yet opens as an empty buffer under that name.
+Folder mode arrives in Phase 4; see PLAN.md.
 ";
 
 fn main() -> ExitCode {
@@ -55,31 +53,24 @@ fn main() -> ExitCode {
         }
     }
 
-    let buffer = match &path {
-        Some(path) => match load(path) {
-            Ok(buffer) => buffer,
+    let document = match &path {
+        // A name that is not on disk yet is a new file, not an error — that is
+        // how every editor is used to start one.
+        Some(path) if !path.exists() => Document::new_at(path),
+        Some(path) => match Document::open(path) {
+            Ok(document) => document,
             Err(e) => {
-                eprintln!("aitch: {}: {e}", path.display());
+                eprintln!("aitch: {e}");
                 return ExitCode::FAILURE;
             }
         },
-        None => Buffer::new(),
+        None => Document::blank(),
     };
 
-    if let Err(e) = aitch_ui::run(buffer, path) {
+    if let Err(e) = aitch_ui::run(document) {
         eprintln!("aitch: {e}");
         return ExitCode::FAILURE;
     }
 
     ExitCode::SUCCESS
-}
-
-/// Read a file into a buffer, streaming rather than slurping so a large file
-/// does not need twice its size in memory on the way in.
-///
-/// Encoding detection and line-ending preservation are Phase 2; this reads
-/// UTF-8 and fails on anything else.
-fn load(path: &PathBuf) -> std::io::Result<Buffer> {
-    let file = File::open(path)?;
-    Buffer::from_reader(BufReader::new(file))
 }

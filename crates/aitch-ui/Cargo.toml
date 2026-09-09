@@ -9,6 +9,8 @@ repository.workspace = true
 
 [dependencies]
 aitch-core = { workspace = true }
+# Named in PLAN.md Phase 2 for exactly this.
+arboard = "3"
 cosmic-text = "0.17"
 winit = "0.30"
 wgpu = "26"
