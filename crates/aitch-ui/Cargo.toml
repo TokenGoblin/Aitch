@@ -21,3 +21,7 @@ pollster = "1"
 [dev-dependencies]
 # The offscreen render test drives wgpu directly.
 aitch-core = { workspace = true }
+# Not in the plan's stack table, and it does not need to be: this is dev-only,
+# for the dump_frame example's --png, and arboard already builds the same
+# version of it through `image`. Nothing new is compiled and nothing new ships.
+png = "0.18"

@@ -1,4 +1,4 @@
-//! Render one frame offscreen and dump it as raw RGBA, for looking at.
+//! Render one frame offscreen and write it out, for looking at.
 //!
 //! PLAN.md §7 leaves visual checks as the only manual step in testing. This
 //! makes that step repeatable and headless: no window, no display, no GPU
@@ -7,13 +7,17 @@
 //! editor would show.
 //!
 //! ```text
-//! cargo run -p aitch-ui --example dump_frame -- src/main.rs frame.raw [chords]
+//! cargo run -p aitch-ui --example dump_frame -- src/main.rs frame.png [chords]
 //! ```
 //!
 //! `chords` is an optional whitespace-separated sequence fed to the editor
 //! first, so a prompt or the help pane can be captured: `"^W"` opens a search.
 //!
-//! The output is `u32` width, `u32` height, then `width * height` RGBA pixels.
+//! The output format follows the file extension. `.png` writes a PNG — this is
+//! how the README screenshots are made, and `docs/screenshots.md` has the exact
+//! commands. Anything else writes raw RGBA: `u32` width, `u32` height, then
+//! `width * height` pixels, which is what the render tests compare against.
+//!
 //! Width must be a multiple of 64 to satisfy the GPU copy alignment.
 
 use std::io::Write;
@@ -32,7 +36,7 @@ const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 fn main() {
     let mut args = std::env::args().skip(1);
     let (Some(input), Some(out)) = (args.next(), args.next()) else {
-        eprintln!("usage: dump_frame <text file> <output.raw> [chords]");
+        eprintln!("usage: dump_frame <text file> <output.png|output.raw> [chords]");
         std::process::exit(2);
     };
     let chords = args.next().unwrap_or_default();
@@ -205,9 +209,30 @@ fn main() {
     device.poll(wgpu::PollType::Wait).unwrap();
     let pixels = slice.get_mapped_range().to_vec();
 
-    let mut f = std::fs::File::create(&out).expect("could not create the output file");
-    f.write_all(&W.to_le_bytes()).unwrap();
-    f.write_all(&H.to_le_bytes()).unwrap();
-    f.write_all(&pixels).unwrap();
+    let file = std::fs::File::create(&out).expect("could not create the output file");
+    if std::path::Path::new(&out)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+    {
+        // The readback is tightly packed -- bytes_per_row is exactly W * 4 --
+        // so it is already in the row order a PNG wants.
+        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), W, H);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        // The frame is drawn into an Rgba8UnormSrgb target, so the bytes are
+        // already sRGB. Saying so keeps a viewer from applying a curve twice.
+        encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+        encoder
+            .write_header()
+            .expect("could not write the PNG header")
+            .write_image_data(&pixels)
+            .expect("could not write the PNG");
+    } else {
+        let mut f = std::io::BufWriter::new(file);
+        f.write_all(&W.to_le_bytes()).unwrap();
+        f.write_all(&H.to_le_bytes()).unwrap();
+        f.write_all(&pixels).unwrap();
+        f.flush().unwrap();
+    }
     eprintln!("wrote {out}");
 }

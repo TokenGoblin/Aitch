@@ -178,3 +178,42 @@ fn the_documentation_the_installer_ships_is_all_there() {
         );
     }
 }
+
+#[test]
+fn every_image_the_readme_shows_is_in_the_repository() {
+    // The screenshots are the pitch (PLAN.md Phase 8), and a README whose
+    // images are broken boxes makes a worse first impression than one with no
+    // images at all. They are generated rather than captured -- see
+    // docs/screenshots.md -- so it is easy to move one and not notice.
+    let root = repository_root();
+    let readme = read_doc("README.md");
+
+    let mut found = 0;
+    let mut rest = readme.as_str();
+    while let Some(start) = rest.find("](") {
+        rest = &rest[start + 2..];
+        let Some(end) = rest.find(')') else { break };
+        let target = &rest[..end];
+        rest = &rest[end + 1..];
+
+        // Only local images. External URLs are someone else's problem, and a
+        // link to another document is checked by following it, not by us.
+        if target.starts_with("http") {
+            continue;
+        }
+        if !Path::new(target)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+        {
+            continue;
+        }
+
+        found += 1;
+        assert!(
+            root.join(target).is_file(),
+            "README.md shows {target}, which is not in the repository"
+        );
+    }
+
+    assert!(found >= 2, "found only {found} images in the README");
+}

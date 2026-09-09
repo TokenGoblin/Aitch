@@ -3,10 +3,22 @@
 A clean and simple text editor with file browsing — nano's interaction model,
 VS Code's project model.
 
+![The editor: Rust source with syntax highlighting, the filename on the status
+line, and nano's two-row shortcut footer beneath it](docs/images/editor.png)
+
 Modeless: you open it and you type. The footer is the UI — two rows of
 context-sensitive shortcuts, always visible, generated from the active keymap
 rather than hardcoded. Prompts happen on a line above the footer. No modal
 dialogs, no floating windows.
+
+`M-T` opens the folder. The footer follows the focus — these are the tree's
+keys, and nothing had to be written twice for that to happen:
+
+![The same file with the folder tree open on the left, and a footer showing the
+tree's own shortcuts](docs/images/tree.png)
+
+Both images are rendered by the editor itself, headlessly, by one command each:
+[`docs/screenshots.md`](docs/screenshots.md).
 
 **Status: 0.1.0.** It looks and behaves like nano, opens folders, highlights
 thirteen languages, searches a whole tree, reads a config file that applies as
@@ -137,6 +149,7 @@ Two profiles ship, both just data:
 | [`docs/guide.md`](docs/guide.md) | How to use it, start to finish |
 | [`docs/config.md`](docs/config.md) | Every setting, and where the file goes |
 | [`docs/keymap.md`](docs/keymap.md) | Writing your own keymap |
+| [`docs/screenshots.md`](docs/screenshots.md) | Regenerating the images above |
 | [`CHANGELOG.md`](CHANGELOG.md) | What changed, and what it measured |
 | [`PLAN.md`](PLAN.md) | The design, and the budgets it is held to |
 
@@ -145,11 +158,13 @@ Two profiles ship, both just data:
 ```
 cargo test --workspace                  # unit, golden-file, harness, render
 cargo bench -p aitch-core               # the PLAN.md §6 budgets
-cargo run -p aitch-ui --example dump_frame -- file.rs frame.raw
+cargo run -p aitch-ui --example dump_frame -- file.rs frame.png
 ```
 
-`dump_frame` renders a frame headlessly and writes raw RGBA, so the one
-remaining manual step — looking at the text — needs no display.
+`dump_frame` renders a frame headlessly — no window, no display — so the one
+remaining manual step, looking at the text, is a picture you can open. It
+writes a PNG or the raw RGBA the render tests compare against, chosen on the
+file extension.
 
 ## Known limitations
 

@@ -98,6 +98,7 @@ dependencies = [
  "aitch-core",
  "arboard",
  "cosmic-text",
+ "png",
  "pollster",
  "wgpu",
  "winit",

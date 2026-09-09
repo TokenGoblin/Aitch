@@ -4,6 +4,26 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Documentation
+
+- **Screenshots in the README**, which PLAN.md Phase 8 calls the whole pitch:
+  the editor showing Rust with the two-row nano footer under it, and the same
+  file with `M-T`'s folder tree open and the footer switched to the tree's own
+  keys. The second one makes the argument better than the paragraph next to it
+  does — nothing was written twice for the footer to follow the focus.
+- The images are **rendered by the editor, headlessly, one command each**,
+  rather than captured by hand: `dump_frame` now writes a PNG when the output
+  is named `.png`, and raw RGBA otherwise. A screenshot taken by hand goes
+  stale the moment a colour or a footer entry changes and nobody notices.
+  [`docs/screenshots.md`](docs/screenshots.md) has the commands and why those
+  frames.
+- `crates/aitch-harness/tests/documentation.rs` now checks that every image
+  the README shows is actually in the repository, so a moved file is a failed
+  test rather than a broken box on the front page.
+- `png` is a dev-dependency of `aitch-ui` only. It is not new to the build:
+  `arboard` already compiles the same version of it through `image`, so
+  nothing extra is built and nothing extra ships.
+
 ## [0.1.0] — 2026-09-08
 
 The first release. Everything below, from Phase 0 through Phase 7, plus a
