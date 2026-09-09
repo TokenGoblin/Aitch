@@ -10,6 +10,11 @@ repository.workspace = true
 # NON-NEGOTIABLE: no winit, no wgpu, no cosmic-text in this file. See CLAUDE.md.
 [dependencies]
 # All three are named in PLAN.md's stack table for this phase.
+# Ripgrep's own search internals, per PLAN.md's stack table: not shelling
+# out to the rg binary.
+grep-matcher = "0.1"
+grep-regex = "0.1"
+grep-searcher = "0.1"
 ignore = "0.4"
 tree-sitter = "0.26"
 

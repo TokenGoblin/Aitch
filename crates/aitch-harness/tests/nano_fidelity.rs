@@ -526,24 +526,10 @@ fn copying_nothing_says_so_rather_than_clearing_the_clipboard() {
 // -- ^T Open, M-T Tree, M-B Buffers, M-^W Search All ------------------------
 
 #[test]
-fn project_search_admits_it_is_not_built() {
-    // Phase 6. Better a key that says what it is than one that silently does
-    // nothing. The folder-mode keys arrived in Phase 4; see folder_mode.rs.
-    let mut h = Harness::nano().with_text("text");
-    h.feed("M-^W").unwrap();
-    let status = h.status();
-    assert!(
-        status.contains("project search") && status.contains("not built yet"),
-        "M-^W said {status:?}"
-    );
-    assert_eq!(h.text(), "text");
-}
-
-#[test]
 fn the_folder_keys_say_so_when_no_folder_is_open() {
     // Opening a bare file is the common case, and these keys have nothing to
     // act on then. Saying why beats appearing broken.
-    for chord in ["^T", "M-T"] {
+    for chord in ["^T", "M-T", "M-^W"] {
         let mut h = Harness::nano().with_text("text");
         h.feed(chord).unwrap();
         assert!(

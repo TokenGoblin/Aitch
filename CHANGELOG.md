@@ -4,6 +4,63 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Phase 6 — Project-wide search
+
+Added:
+
+- `M-^W` (`Ctrl+Shift+F` in the modern profile) searches every file in the
+  folder, using ripgrep's own machinery — `ignore` to walk, `grep-regex` to
+  match, `grep-searcher` to read — rather than shelling out to `rg`.
+- Results stream into the pane above the prompt line as they are found, with
+  `file:line: text` per hit. Enter opens the file at that line.
+- Typing another character abandons the running search and starts again, which
+  is what makes it feel like search rather than like waiting for a build.
+- Smart case, as ripgrep has it: an all-lowercase pattern ignores case, one
+  with a capital in it means the capital.
+- Literal by default; a pattern is only a regular expression when asked. So
+  searching for `foo(bar)` finds `foo(bar)`.
+- `^\` from the results starts a **project-wide replace**: it asks what to put
+  in place, works out the whole plan, and shows how many occurrences in how
+  many files before writing anything.
+
+Measured, on an 868 MB tree of 37,677 files:
+
+| | measured | PLAN.md Phase 6 budget |
+|---|---|---|
+| **First results visible** | **5.5 ms** | under 200 ms ✓ |
+| Whole tree searched, no matches | 748 ms | |
+| Rare pattern, 43 hits | 66 ms to first, 432 ms done | |
+| UI thread blocked | never — searching is on its own threads | ✓ |
+
+Decisions:
+
+- **Nothing is written until the whole plan is built.** A file that cannot be
+  read or re-encoded stops a project replace before it has changed anything,
+  which is what "all or nothing" has to mean if it means anything. Across
+  files the write phase is a sequence rather than a transaction: each file is
+  written atomically, and a failure part-way says how many were done rather
+  than pretending otherwise.
+- **A replace goes through `fileio`.** A UTF-16 file with CRLF endings stays
+  one. A project-wide replace that quietly rewrote a tree as UTF-8 LF would be
+  a far worse bug than whatever it was asked to fix, and there is a test for
+  exactly that.
+- Hits are capped at 2,000 and the status line says when the cap was reached.
+  A search matching half a tree needs narrowing, not more memory.
+- Wake-ups are batched. Ten thousand hits must not wake the event loop ten
+  thousand times.
+- Patterns shorter than three characters are not searched for: they match most
+  of a tree and say nothing.
+- A project search lives in the `search` context, where the arrows already
+  walk results and `^\` is already Replace.
+
+Not done:
+
+- Replace is literal only. A regex replace with capture groups is a different
+  feature with its own ways to go wrong, and this one has to be trustworthy
+  first.
+- Soft wrap, double-click and triple-click selection, and the Phase 1 cold
+  start and idle-memory budgets, all still carried forward.
+
 ### Phase 5 — Syntax highlighting
 
 Added:

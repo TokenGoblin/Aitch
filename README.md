@@ -8,9 +8,9 @@ context-sensitive shortcuts, always visible, generated from the active keymap
 rather than hardcoded. Prompts happen on a line above the footer. No modal
 dialogs, no floating windows.
 
-**Status: Phase 5.** It looks and behaves like nano, opens folders, and
-highlights thirteen languages. Project-wide search is Phase 6, configuration
-Phase 7. See [`PLAN.md`](PLAN.md).
+**Status: Phase 6.** It looks and behaves like nano, opens folders, highlights
+thirteen languages, and searches a whole tree. Configuration is Phase 7,
+packaging Phase 8. See [`PLAN.md`](PLAN.md).
 
 ## Build and run
 
@@ -40,6 +40,10 @@ else. `.gitignore` is respected throughout.
 Syntax highlighting comes from tree-sitter and runs on its own thread, so a
 keystroke costs 1.2 µs of the frame however large the file. `M-N` shows line
 numbers and `M-P` shows tabs and trailing spaces.
+
+`M-^W` searches every file in the folder, streaming results as they are found
+— 5.5 ms to the first hit on an 868 MB tree — and `^\` from there replaces
+across the whole project, showing you the plan before it writes anything.
 
 Files keep the encoding and line endings they arrived with. Open a UTF-16 file
 with CRLF endings, change one word, save, and only that word differs.

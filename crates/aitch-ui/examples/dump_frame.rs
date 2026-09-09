@@ -98,6 +98,17 @@ fn main() {
         }
     }
 
+    // A project search runs on its own threads too; let it deliver.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if editor.poll_search() {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            editor.poll_search();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
     // Give the parser a moment to answer before drawing the one frame.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < deadline {

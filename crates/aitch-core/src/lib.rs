@@ -20,6 +20,7 @@ pub mod history;
 pub mod keymap;
 pub mod line_ending;
 pub mod project;
+pub mod project_search;
 pub mod prompt;
 pub mod search;
 pub mod syntax;
@@ -42,6 +43,7 @@ pub use keymap::{
 };
 pub use line_ending::LineEnding;
 pub use project::{PathIndex, Tree};
+pub use project_search::{Hit, Pattern, ProjectSearch};
 pub use prompt::{Answer, Histories, Prompt};
 pub use search::{Direction, Match, Query};
 pub use syntax::{Highlighter, Language, Span, Token};

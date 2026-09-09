@@ -43,6 +43,17 @@ pub enum Kind {
     BufferList,
     /// The file changed on disk since it was read. Save over it anyway?
     OverwriteChanged,
+    /// Search every file in the folder.
+    ProjectSearch,
+    /// What to put in place of a project-wide match.
+    ProjectReplaceWith { find: String },
+    /// The plan, before anything is written.
+    ProjectReplaceConfirm {
+        find: String,
+        replace: String,
+        files: usize,
+        occurrences: usize,
+    },
 }
 
 impl Kind {
@@ -50,7 +61,10 @@ impl Kind {
     pub fn is_question(&self) -> bool {
         matches!(
             self,
-            Kind::ReplaceConfirm { .. } | Kind::SaveBeforeQuit | Kind::OverwriteChanged
+            Kind::ReplaceConfirm { .. }
+                | Kind::SaveBeforeQuit
+                | Kind::OverwriteChanged
+                | Kind::ProjectReplaceConfirm { .. }
         )
     }
 
@@ -65,13 +79,18 @@ impl Kind {
     /// when there is something on screen to pick from, that is what the
     /// arrows are obviously for.
     pub fn has_results(&self) -> bool {
-        matches!(self, Kind::QuickOpen | Kind::BufferList)
+        matches!(
+            self,
+            Kind::QuickOpen | Kind::BufferList | Kind::ProjectSearch
+        )
     }
 
     /// Which history list this prompt draws on. Questions have none.
     pub fn history(&self) -> Option<HistoryKind> {
         match self {
-            Kind::Search { .. } | Kind::ReplaceFind => Some(HistoryKind::Search),
+            Kind::Search { .. } | Kind::ReplaceFind | Kind::ProjectSearch => {
+                Some(HistoryKind::Search)
+            }
             Kind::ReplaceWith { .. } => Some(HistoryKind::Replace),
             Kind::SaveAs | Kind::InsertFile | Kind::QuickOpen => Some(HistoryKind::File),
             Kind::GotoLine => Some(HistoryKind::Goto),
@@ -91,6 +110,13 @@ impl Kind {
             Kind::InsertFile => "File to insert".to_string(),
             Kind::ReplaceFind => "Search (to replace)".to_string(),
             Kind::ReplaceWith { find } => format!("Replace {find:?} with"),
+            Kind::ProjectSearch => "Search in folder".to_string(),
+            Kind::ProjectReplaceWith { find } => {
+                format!("Replace {find:?} everywhere with")
+            }
+            Kind::ProjectReplaceConfirm {
+                files, occurrences, ..
+            } => format!("Replace {occurrences} occurrences in {files} files?"),
             Kind::ReplaceConfirm { .. } => "Replace this instance?".to_string(),
             Kind::SaveBeforeQuit => "Save modified buffer?".to_string(),
             Kind::QuickOpen => "Open file".to_string(),

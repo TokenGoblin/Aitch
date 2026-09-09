@@ -37,6 +37,8 @@ pub enum Wake {
     FolderChanged,
     /// A syntax parse finished and there is new colour to draw.
     HighlightsReady,
+    /// A project-wide search found more matches.
+    SearchResults,
 }
 
 /// Open a window on `workspace` and run until it closes.
@@ -59,7 +61,9 @@ pub fn run(workspace: Workspace) -> Result<(), Box<dyn Error>> {
         });
     }
 
-    // Parsing happens on its own thread; this is how it says it has finished.
+    // Parsing and project search both run on their own threads; this is how
+    // they say they have something. One channel serves both: the poll on the
+    // other side is cheap and the alternative is two proxies to keep in step.
     let proxy = event_loop.create_proxy();
     app.editor.set_wake(move || {
         let _ = proxy.send_event(Wake::HighlightsReady);
@@ -258,8 +262,10 @@ impl ApplicationHandler<Wake> for App {
                     self.redraw();
                 }
             }
-            Wake::HighlightsReady => {
-                if self.editor.poll_highlights() {
+            Wake::HighlightsReady | Wake::SearchResults => {
+                let colours = self.editor.poll_highlights();
+                let results = self.editor.poll_search();
+                if colours || results {
                     // Only the colours moved, so the shaped layout still
                     // stands: no generation bump, just another pass.
                     self.redraw();

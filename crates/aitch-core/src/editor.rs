@@ -21,6 +21,7 @@ use crate::footer::{self, Footer};
 use crate::highlighter::{Highlights, SyntaxThread};
 use crate::keymap::{Context, Keymap};
 use crate::project::{PathIndex, Tree};
+use crate::project_search::{self, Hit, Pattern, ProjectSearch};
 use crate::prompt::{self, Answer, Histories, Kind, Prompt};
 use crate::search::{self, Direction, Match, Query};
 use crate::syntax::Language;
@@ -49,6 +50,10 @@ impl Outcome {
         !matches!(self, Outcome::Nothing)
     }
 }
+
+/// Fewer characters than this matches most of a tree and says nothing, so a
+/// project search waits until there is something worth looking for.
+const PROJECT_SEARCH_MINIMUM: usize = 3;
 
 /// How far to look for a bracket's partner, in characters. Far enough for any
 /// function worth reading; near enough that a 50 MB log cannot stall a frame.
@@ -101,6 +106,10 @@ pub struct Editor {
     /// Parses the active buffer off this thread. `None` for a file whose
     /// language Aitch has no grammar for, which simply shows uncoloured.
     syntax: Option<SyntaxThread>,
+    /// The running project-wide search, if there is one.
+    finder: Option<ProjectSearch>,
+    /// Its hits, in the order they arrived.
+    found: Vec<Hit>,
     /// What the view shows beyond the text itself.
     view: ViewOptions,
     /// Wakes the event loop when a parse finishes. The core cannot know how,
@@ -132,6 +141,8 @@ impl Editor {
             results: Vec::new(),
             result: 0,
             syntax: None,
+            finder: None,
+            found: Vec::new(),
             view: ViewOptions::default(),
             wake: None,
             quitting: false,
@@ -340,6 +351,15 @@ impl Editor {
         if let Some(message) = &self.status {
             return message.clone();
         }
+        // A running search says how it is going, since it may take a moment.
+        if self.finder.is_some()
+            && self
+                .prompt
+                .as_ref()
+                .is_some_and(|p| p.kind == Kind::ProjectSearch)
+        {
+            return self.search_status();
+        }
         let modified = if self.workspace.active().is_dirty() {
             "  Modified"
         } else {
@@ -544,7 +564,9 @@ impl Editor {
                 }
             },
 
-            // Phases 4 and 6. Saying so beats a key that does nothing.
+            Command::ProjectSearch => self.open_project_search(),
+
+            // Anything still unbuilt. Saying so beats a key that does nothing.
             other => {
                 self.say(format!(
                     "{} is not built yet",
@@ -671,6 +693,18 @@ impl Editor {
             };
         }
 
+        // Replace, from a project search, means replace across the project.
+        // Taken from the prompt that is already borrowed above, and used only
+        // on a path that returns, so the borrow ends here.
+        if matches!(command, Command::Replace) && prompt.kind == Kind::ProjectSearch {
+            let find = prompt.input().to_string();
+            if find.is_empty() || self.found.is_empty() {
+                self.say("search for something first");
+                return Outcome::Redraw;
+            }
+            return self.open_prompt(Kind::ProjectReplaceWith { find });
+        }
+
         let changed = match command {
             Command::PromptAccept => return self.accept(),
             Command::PromptCancel => return self.cancel(),
@@ -733,6 +767,18 @@ impl Editor {
             {
                 self.search_from_prompt();
             }
+            // Typing into a project search abandons the old one and starts
+            // again, which is what makes it feel like search rather than
+            // like waiting for a build.
+            let searching = self
+                .prompt
+                .as_ref()
+                .filter(|p| p.kind == Kind::ProjectSearch)
+                .map(|p| p.input().to_string());
+            if let Some(pattern) = searching {
+                self.restart_project_search(&pattern);
+            }
+
             if self.prompt.as_ref().is_some_and(|p| p.kind.has_results()) {
                 self.refresh_results();
             }
@@ -757,7 +803,12 @@ impl Editor {
         };
 
         self.context = match kind {
-            Kind::Search { .. } | Kind::ReplaceConfirm { .. } => Context::Search,
+            // A project search belongs in the search context: that is where
+            // the arrows walk results and where Replace is bound, and its
+            // footer already reads the way this prompt needs it to.
+            Kind::Search { .. } | Kind::ReplaceConfirm { .. } | Kind::ProjectSearch => {
+                Context::Search
+            }
             _ => Context::Prompt,
         };
         self.prompt = Some(Prompt::new(kind, origin).with_input(prefill));
@@ -767,6 +818,10 @@ impl Editor {
     fn close_prompt(&mut self) {
         self.prompt = None;
         self.context = Context::Editor;
+        // The list belonged to the prompt; leaving it behind would draw a
+        // pane of results for a question nobody is being asked any more.
+        self.results.clear();
+        self.result = 0;
     }
 
     fn cancel(&mut self) -> Outcome {
@@ -780,6 +835,10 @@ impl Editor {
                 self.follow_cursor();
             }
         }
+        // Dropping the search cancels it; leaving it running would keep a
+        // thread walking a tree nobody is waiting on.
+        self.finder = None;
+        self.found.clear();
         self.close_prompt();
         self.say("cancelled");
         Outcome::Redraw
@@ -866,6 +925,33 @@ impl Editor {
                 }
             },
 
+            Kind::ProjectSearch => match self.found.get(self.result).cloned() {
+                Some(hit) => {
+                    let Some(root) = self.workspace.root().map(Path::to_path_buf) else {
+                        return Outcome::Redraw;
+                    };
+                    let path = root.join(&hit.path);
+                    let outcome = self.open_path(&path);
+                    // Jump to the line the match was on.
+                    let line = (hit.line.saturating_sub(1)) as usize;
+                    let last = self.workspace.active().buffer.len_lines().saturating_sub(1);
+                    self.workspace
+                        .active_mut()
+                        .buffer
+                        .set_cursor(Position::new(line.min(last), 0));
+                    self.follow_cursor();
+                    outcome
+                }
+                None => {
+                    self.say("nothing to open");
+                    Outcome::Redraw
+                }
+            },
+
+            Kind::ProjectReplaceWith { find } => self.plan_project_replace(find, input),
+
+            Kind::ProjectReplaceConfirm { .. } => Outcome::Redraw,
+
             Kind::BufferList => {
                 let picked = self.result;
                 self.results.clear();
@@ -914,6 +1000,21 @@ impl Editor {
                 replace,
                 done,
             } => self.continue_replace(find, replace, done, answer),
+
+            Kind::ProjectReplaceConfirm {
+                find,
+                replace,
+                occurrences,
+                ..
+            } => match answer {
+                Answer::Yes | Answer::All => {
+                    self.apply_project_replace(&find, &replace, occurrences)
+                }
+                _ => {
+                    self.say("nothing was changed");
+                    Outcome::Redraw
+                }
+            },
 
             Kind::OverwriteChanged => match answer {
                 Answer::Yes => self.write_out_now(),
@@ -1231,6 +1332,74 @@ impl Editor {
         outcome
     }
 
+    fn open_project_search(&mut self) -> Outcome {
+        if self.workspace.root().is_none() {
+            self.say("no folder is open — start Aitch with a folder");
+            return Outcome::Redraw;
+        }
+        self.found.clear();
+        self.finder = None;
+        let outcome = self.open_prompt(Kind::ProjectSearch);
+        self.refresh_results();
+        outcome
+    }
+
+    /// Start a fresh search for what has been typed so far.
+    ///
+    /// The previous one is cancelled rather than waited for: that is what
+    /// makes typing into a project search feel like search.
+    fn restart_project_search(&mut self, pattern: &str) {
+        // Dropping it cancels it.
+        self.finder = None;
+        self.found.clear();
+
+        let Some(root) = self.workspace.root().map(Path::to_path_buf) else {
+            return;
+        };
+        // One or two characters match most of a tree and tell you nothing.
+        if pattern.chars().count() < PROJECT_SEARCH_MINIMUM {
+            return;
+        }
+
+        let wake = self.wake.clone();
+        match ProjectSearch::start(&root, Pattern::new(pattern), move || {
+            if let Some(wake) = &wake {
+                wake();
+            }
+        }) {
+            Ok(search) => self.finder = Some(search),
+            Err(e) => self.say(format!("{e}")),
+        }
+    }
+
+    /// Collect whatever the search has found. True if anything arrived.
+    pub fn poll_search(&mut self) -> bool {
+        let Some(finder) = self.finder.as_mut() else {
+            return false;
+        };
+        if finder.poll() == 0 {
+            return false;
+        }
+        self.found = finder.hits().to_vec();
+        self.refresh_results();
+        true
+    }
+
+    /// How the search is going, for the status line.
+    fn search_status(&self) -> String {
+        let Some(finder) = &self.finder else {
+            return String::new();
+        };
+        let hits = self.found.len();
+        if finder.is_truncated() {
+            format!("{hits} matches (showing the first {hits})")
+        } else if finder.is_finished() {
+            format!("{hits} matches")
+        } else {
+            format!("{hits} matches so far...")
+        }
+    }
+
     /// Recompute the list above the prompt line for whatever is being asked.
     fn refresh_results(&mut self) {
         let Some(prompt) = &self.prompt else {
@@ -1245,6 +1414,7 @@ impl Editor {
                 None => Vec::new(),
             },
             Kind::BufferList => self.workspace.listing(),
+            Kind::ProjectSearch => self.found.iter().map(Hit::label).collect(),
             _ => Vec::new(),
         };
         self.result = self.result.min(self.results.len().saturating_sub(1));
@@ -1315,6 +1485,76 @@ impl Editor {
         if self.workspace.active().changed_on_disk() {
             self.say("this file has changed on disk since you opened it");
         }
+        Outcome::Redraw
+    }
+
+    /// Work out what a project-wide replace would do, and ask before doing it.
+    fn plan_project_replace(&mut self, find: String, replace: String) -> Outcome {
+        let Some(root) = self.workspace.root().map(Path::to_path_buf) else {
+            return Outcome::Redraw;
+        };
+        if self.found.is_empty() {
+            self.say("nothing to replace");
+            return Outcome::Redraw;
+        }
+
+        let pattern = Pattern::new(find.clone());
+        match project_search::plan_replace(&self.found, &root, &pattern, &replace) {
+            Ok(plan) if plan.is_empty() => {
+                self.say("nothing to replace");
+                Outcome::Redraw
+            }
+            Ok(plan) => {
+                let files = plan.files();
+                let occurrences = plan.occurrences();
+                self.results = plan.preview();
+                self.result = 0;
+                self.open_prompt(Kind::ProjectReplaceConfirm {
+                    find,
+                    replace,
+                    files,
+                    occurrences,
+                })
+            }
+            Err(e) => {
+                // A file that cannot be read stops the whole thing before it
+                // has written anything, which is the point of planning first.
+                self.say(format!("{e}"));
+                Outcome::Redraw
+            }
+        }
+    }
+
+    fn apply_project_replace(&mut self, find: &str, replace: &str, occurrences: usize) -> Outcome {
+        let Some(root) = self.workspace.root().map(Path::to_path_buf) else {
+            return Outcome::Redraw;
+        };
+        let pattern = Pattern::new(find.to_string());
+
+        // Re-planned rather than carried through the prompt: the files may
+        // have moved while the question was on screen, and writing a stale
+        // plan would undo whatever changed them.
+        let plan = match project_search::plan_replace(&self.found, &root, &pattern, replace) {
+            Ok(plan) => plan,
+            Err(e) => {
+                self.say(format!("{e}"));
+                return Outcome::Redraw;
+            }
+        };
+
+        self.results.clear();
+        match project_search::apply_replace(&plan) {
+            Ok(files) => {
+                self.say(format!(
+                    "Replaced {occurrences} occurrences in {files} files"
+                ));
+            }
+            Err((written, e)) => {
+                self.say(format!("stopped after {written} files: {e}"));
+            }
+        }
+        // Whatever is open may now be out of date with its file.
+        self.start_highlighting();
         Outcome::Redraw
     }
 
