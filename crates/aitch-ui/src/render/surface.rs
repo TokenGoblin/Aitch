@@ -3,12 +3,13 @@
 use std::fmt;
 use std::sync::Arc;
 
-use aitch_core::{Buffer, Position};
+use aitch_core::{Editor, Position};
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use crate::render::atlas::Atlas;
 use crate::render::quads::{Instances, QuadPipeline};
+use crate::render::screen;
 use crate::render::text::TextRenderer;
 use crate::theme::Theme;
 
@@ -114,9 +115,18 @@ impl Surface {
         self.text.line_height()
     }
 
-    /// How many whole lines of text fit in the window.
+    /// How many lines of the document are visible.
+    ///
+    /// The bottom three rows are not the document's: one status or prompt
+    /// line, then the two footer rows. That is the nano screen, and the text
+    /// area is what is left over.
     pub fn visible_lines(&self) -> usize {
-        self.text.lines_for_height(self.config.height as f32)
+        screen::text_rows(&self.text, self.config.height as f32)
+    }
+
+    /// How many character cells fit across the window, for footer layout.
+    pub fn columns(&self) -> usize {
+        screen::columns(&self.text, self.config.width as f32)
     }
 
     /// React to a DPI change: re-derive the metrics and drop every cached
@@ -144,34 +154,42 @@ impl Surface {
         self.text.hit(x, y, -sub_line_offset)
     }
 
-    /// Draw one frame.
+    /// Draw one frame: the text area, then the chrome under it.
     ///
-    /// `first_line` is the top visible line and `sub_line_offset` how far into
-    /// it the window has scrolled, in physical pixels — that pair is what makes
-    /// touchpad scrolling smooth instead of jumping a line at a time.
+    /// `sub_line_offset` is how far into the top visible line the window has
+    /// scrolled, in physical pixels — the pair with the viewport's first line
+    /// is what makes touchpad scrolling smooth rather than a line at a time.
     pub fn render(
         &mut self,
-        buffer: &Buffer,
-        first_line: usize,
+        editor: &Editor,
         sub_line_offset: f32,
         generation: u64,
         theme: &Theme,
     ) -> Result<(), SurfaceError> {
         let size = (self.config.width as f32, self.config.height as f32);
-        self.text.prepare(buffer, first_line, size, generation);
 
         self.instances.clear();
-        self.text.push_instances(
+        screen::draw(
             &self.queue,
             &mut self.atlas,
+            &mut self.text,
             &mut self.instances,
-            buffer,
-            -sub_line_offset,
+            editor,
             theme,
+            screen::Layout {
+                size,
+                scale_factor: self.scale_factor as f32,
+                sub_line_offset,
+                generation,
+            },
         );
+
         self.pipeline
             .upload(&self.device, &self.queue, [size.0, size.1], &self.instances);
+        self.present(theme)
+    }
 
+    fn present(&mut self, theme: &Theme) -> Result<(), SurfaceError> {
         let frame = match self.surface.get_current_texture() {
             Ok(frame) => frame,
             // The swapchain went stale (a resize or a display change raced us).

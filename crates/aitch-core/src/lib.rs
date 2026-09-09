@@ -12,19 +12,28 @@ pub mod buffer;
 pub mod command;
 pub mod document;
 pub mod edit;
+pub mod editor;
 pub mod fileio;
+pub mod footer;
 pub mod history;
 pub mod keymap;
 pub mod line_ending;
+pub mod prompt;
+pub mod search;
 
 pub use buffer::{Applied, Buffer, Position, Viewport};
 pub use command::Command;
 pub use document::Document;
 pub use edit::Edit;
+pub use editor::{Editor, Outcome};
 pub use fileio::{Charset, Encoding, FileError, Loaded};
+pub use footer::Footer;
 pub use history::History;
+pub use keymap::Binding as KeymapBinding;
 pub use keymap::{
     Binding, Chord, ChordParseError, Context, FooterEntry, Key, Keymap, KeymapError, Mods,
     NamedKey, MODERN_PROFILE, NANO_PROFILE,
 };
 pub use line_ending::LineEnding;
+pub use prompt::{Answer, Histories, Prompt};
+pub use search::{Direction, Match, Query};

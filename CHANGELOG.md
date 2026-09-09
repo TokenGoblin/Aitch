@@ -4,6 +4,62 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Phase 3 — The nano personality
+
+This is the phase that makes it this editor rather than a generic one.
+
+Added:
+
+- **The footer.** Two rows, generated from the active keymap for the current
+  context, laid out column-major so `^G Help` sits above `^X Exit` the way
+  nano has it. A narrow window drops whole columns of the lowest-priority
+  entries, and the column width is measured over the cells actually shown —
+  sizing to an entry that gets dropped would waste width and drop more.
+- **The status line**: filename, modified marker, cursor position on `^C`,
+  and transient messages that expire on the next keystroke rather than on a
+  timer, which is both what nano does and what a headless test can assert on.
+- **The prompt line**: one line above the footer for save-as, goto, search,
+  replace and the yes/no questions, each with its own footer row of keys and
+  its own history walked with the arrows. A prompt replaces the status line
+  rather than stacking on it — three rows of chrome is the limit.
+- **`^W` incremental search**: the match is found and highlighted as the term
+  is typed, wraps around the end and says so, and cancelling puts the cursor
+  back where it started. `M-W` repeats without a prompt.
+- **`^\` replace** with per-match `y`/`n`/`a` confirmation.
+- **`^_` goto line**, taking `line` or `line:column`, counting from one.
+- **`^G` help**: a scrollable pane generated from the keymap, so it cannot
+  drift from what the keys actually do. Not a dialog — the footer stays put
+  underneath and says how to leave.
+- **`^R` insert file** at the cursor, and `^O` save-as when there is no name.
+- `editor.rs`, the session that owns document, viewport, keymap, context,
+  prompt and status. The UI shrank to the window: pixels, pointer, clipboard
+  and fractional scrolling.
+- `render/screen.rs` lays out a frame without needing a window, so the
+  offscreen tests and `dump_frame` draw through the same code the window does.
+
+Changed:
+
+- At a search prompt the arrows now walk past searches rather than stepping
+  between matches, as nano's do; `M-W` and `M-Q` step between matches.
+- `^X` on a modified buffer asks "Save modified buffer?" on the prompt line.
+  Phase 2 had to put that warning in the window title for want of anywhere to
+  ask; the title is now just a title again.
+
+Acceptance:
+
+- Every labelled footer command has a harness test that presses the chord a
+  nano user would press and asserts on what would be on screen. A guard test
+  compares the footer against the list those tests cover, so a new entry fails
+  until someone writes one.
+- Nine offscreen render tests, including that the footer reaches the
+  framebuffer and that a prompt puts no ink below the three chrome rows.
+
+Not done:
+
+- Search is literal, not regex. `search.rs` is named for regex in PLAN.md §3;
+  the regex engine arrives with ripgrep's machinery in Phase 6.
+- Double-click word and triple-click line selection, still.
+
 ### Phase 2 — Actually editing
 
 Added:

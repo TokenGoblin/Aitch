@@ -506,17 +506,28 @@ priority = 99
 
 [[binding]]
 context = "search"
-chords = ["Down", "F3"]
+chords = ["F3"]
 command = "where-is-next"
 label = "Next"
 priority = 98
 
 [[binding]]
 context = "search"
-chords = ["Up", "Shift+F3"]
+chords = ["Shift+F3"]
 command = "where-is-prev"
 label = "Prev"
 priority = 97
+
+# The arrows walk past searches here too; F3 steps between matches.
+[[binding]]
+context = "search"
+chords = ["Up"]
+command = "prompt-history-prev"
+
+[[binding]]
+context = "search"
+chords = ["Down"]
+command = "prompt-history-next"
 
 [[binding]]
 context = "search"

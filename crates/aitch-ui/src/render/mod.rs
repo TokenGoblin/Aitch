@@ -7,6 +7,7 @@
 
 pub mod atlas;
 pub mod quads;
+pub mod screen;
 pub mod text;
 
 mod surface;

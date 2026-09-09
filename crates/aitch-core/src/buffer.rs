@@ -426,6 +426,20 @@ impl Buffer {
         true
     }
 
+    /// Select an explicit character range, leaving the cursor at its end.
+    ///
+    /// Search uses this to highlight a match: the match becomes the selection,
+    /// so it is drawn the same way and a replace can act on it directly.
+    pub fn select_range(&mut self, start: usize, end: usize) -> bool {
+        let length = self.text.len_chars();
+        let start = start.min(length);
+        let end = end.min(length);
+        self.anchor = Some(start);
+        self.cursor.char_index = end;
+        self.cursor.goal_column = None;
+        start != end
+    }
+
     pub fn clear_selection(&mut self) -> bool {
         let had = self.anchor.is_some();
         self.anchor = None;

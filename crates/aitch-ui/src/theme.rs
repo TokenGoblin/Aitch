@@ -51,6 +51,12 @@ pub struct Theme {
     pub cursor: Color,
     /// Drawn behind selected text, so it has to stay readable through it.
     pub selection: Color,
+    /// The status line and footer sit on this.
+    pub chrome_background: Color,
+    pub chrome_foreground: Color,
+    /// A footer chord is drawn reversed, the way nano draws it.
+    pub key_background: Color,
+    pub key_foreground: Color,
 }
 
 impl Theme {
@@ -60,6 +66,10 @@ impl Theme {
             foreground: Color::srgb(0xd4, 0xd7, 0xdd),
             cursor: Color::srgb(0x7a, 0xa2, 0xf7),
             selection: Color::srgba(0x3d, 0x59, 0xa1, 0.55),
+            chrome_background: Color::srgb(0x1e, 0x21, 0x28),
+            chrome_foreground: Color::srgb(0xc0, 0xc5, 0xce),
+            key_background: Color::srgb(0xc0, 0xc5, 0xce),
+            key_foreground: Color::srgb(0x14, 0x16, 0x1a),
         }
     }
 }
@@ -105,6 +115,14 @@ mod tests {
         let bg = Theme::dark().background;
         assert!(bg.r < 0.02 && bg.g < 0.02 && bg.b < 0.02);
         assert_eq!(bg.a, 1.0);
+    }
+
+    #[test]
+    fn a_footer_key_is_drawn_reversed() {
+        // nano shows the chord in reverse video; that is how the eye finds it.
+        let theme = Theme::dark();
+        assert!(theme.key_background.r > theme.key_foreground.r);
+        assert!(theme.chrome_foreground.r > theme.chrome_background.r);
     }
 
     #[test]

@@ -8,8 +8,9 @@ context-sensitive shortcuts, always visible, generated from the active keymap
 rather than hardcoded. Prompts happen on a line above the footer. No modal
 dialogs, no floating windows.
 
-**Status: Phase 2.** It edits files. The footer and prompt line are Phase 3,
-folder mode Phase 4. See [`PLAN.md`](PLAN.md).
+**Status: Phase 3.** It looks and behaves like nano: two footer rows, a status
+line, and prompts on the line above the footer. Folder mode is Phase 4, syntax
+highlighting Phase 5. See [`PLAN.md`](PLAN.md).
 
 ## Build and run
 
@@ -25,6 +26,11 @@ for the file. Shift with any of those selects, or `^6` sets a mark the way
 nano does. `^K` cuts a line and `^U` puts it back, `^O` writes, `^X` exits,
 `M-U` and `M-E` undo and redo.
 
+`^W` searches as you type and wraps around; `^\` replaces with `y`/`n`/`a`
+confirmation; `^_` goes to a line; `^G` opens help. Everything a nano user
+already knows is on the footer, and the footer is generated from the keymap —
+so it stays true in both profiles and in one you write yourself.
+
 Files keep the encoding and line endings they arrived with. Open a UTF-16 file
 with CRLF endings, change one word, save, and only that word differs.
 
@@ -32,7 +38,7 @@ with CRLF endings, change one word, save, and only that word differs.
 
 ```
 crates/
-  aitch-core/     rope, edits, undo, commands, keymap, file IO — no GUI deps
+  aitch-core/     rope, edits, undo, search, keymap, footer, session — no GUI deps
   aitch-ui/       winit + wgpu + cosmic-text
   aitch-harness/  headless driver: feed chords, assert on state
   aitch/          the binary: argument parsing and wiring

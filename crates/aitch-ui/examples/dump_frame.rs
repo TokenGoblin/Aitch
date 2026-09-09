@@ -2,33 +2,48 @@
 //!
 //! PLAN.md §7 leaves visual checks as the only manual step in testing. This
 //! makes that step repeatable and headless: no window, no display, no GPU
-//! driver quirks about screenshots.
+//! driver quirks about screenshots. It draws through exactly the same
+//! `render::screen` code the real window uses, so what comes out is what the
+//! editor would show.
 //!
 //! ```text
-//! cargo run -p aitch-ui --example dump_frame -- src/main.rs frame.raw
+//! cargo run -p aitch-ui --example dump_frame -- src/main.rs frame.raw [chords]
 //! ```
+//!
+//! `chords` is an optional whitespace-separated sequence fed to the editor
+//! first, so a prompt or the help pane can be captured: `"^W"` opens a search.
 //!
 //! The output is `u32` width, `u32` height, then `width * height` RGBA pixels.
 //! Width must be a multiple of 64 to satisfy the GPU copy alignment.
-use aitch_core::Buffer;
-use aitch_ui::render::atlas::Atlas;
-use aitch_ui::render::quads::{Instances, QuadPipeline};
-use aitch_ui::render::text::TextRenderer;
-use aitch_ui::theme::Theme;
+
 use std::io::Write;
 
+use aitch_core::{Buffer, Chord, Command, Document, Editor};
+use aitch_ui::render::atlas::Atlas;
+use aitch_ui::render::quads::{Instances, QuadPipeline};
+use aitch_ui::render::screen::{self, Layout};
+use aitch_ui::render::text::TextRenderer;
+use aitch_ui::theme::Theme;
+
 const W: u32 = 896;
-const H: u32 = 260;
+const H: u32 = 384;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 fn main() {
+    let mut args = std::env::args().skip(1);
+    let (Some(input), Some(out)) = (args.next(), args.next()) else {
+        eprintln!("usage: dump_frame <text file> <output.raw> [chords]");
+        std::process::exit(2);
+    };
+    let chords = args.next().unwrap_or_default();
+
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::LowPower,
         force_fallback_adapter: false,
         compatible_surface: None,
     }))
-    .unwrap();
+    .expect("a GPU adapter");
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: None,
         required_features: wgpu::Features::empty(),
@@ -36,33 +51,54 @@ fn main() {
         memory_hints: wgpu::MemoryHints::default(),
         trace: wgpu::Trace::Off,
     }))
-    .unwrap();
+    .expect("a GPU device");
 
     let theme = Theme::dark();
-    let mut args = std::env::args().skip(1);
-    let (Some(input), Some(out)) = (args.next(), args.next()) else {
-        eprintln!("usage: dump_frame <text file> <output.raw>");
-        std::process::exit(2);
-    };
     let text_src = std::fs::read_to_string(&input).expect("could not read the input file");
-    let mut buffer = Buffer::from_str(&text_src);
-    // A third argument selects that many characters, so the highlight can be
-    // eyeballed too.
-    if let Some(count) = args.next().and_then(|n| n.parse::<usize>().ok()) {
-        buffer.set_mark();
-        for _ in 0..count {
-            buffer.move_right();
-        }
-    }
+
+    let mut document = Document::blank();
+    document.buffer = Buffer::from_str(&text_src);
+    document.set_path(std::path::PathBuf::from(&input));
+    let mut editor = Editor::new(document);
 
     let mut atlas = Atlas::new(&device, &queue, 1024);
     let mut pipeline = QuadPipeline::new(&device, FORMAT, atlas.bind_group_layout());
     let mut text = TextRenderer::new(14.0, 1.0);
     let mut instances = Instances::default();
-    text.prepare(&buffer, 0, (W as f32, H as f32), 0);
-    text.push_instances(&queue, &mut atlas, &mut instances, &buffer, 0.0, &theme);
-    pipeline.upload(&device, &queue, [W as f32, H as f32], &instances);
+
+    let rows = screen::text_rows(&text, H as f32);
+    editor.viewport_mut().set_height_lines(rows);
+
+    for chord in chords.split_whitespace() {
+        let parsed = Chord::parse(chord).expect("a valid chord");
+        let context = editor.context();
+        match editor.keymap().resolve(context, parsed).cloned() {
+            Some(command) => {
+                editor.run(&command);
+            }
+            None => {
+                // Unbound: treat it as typed text, as the real UI does.
+                editor.run(&Command::InsertText(chord.to_string()));
+            }
+        }
+    }
+
+    screen::draw(
+        &queue,
+        &mut atlas,
+        &mut text,
+        &mut instances,
+        &editor,
+        &theme,
+        Layout {
+            size: (W as f32, H as f32),
+            scale_factor: 1.0,
+            sub_line_offset: 0.0,
+            generation: 0,
+        },
+    );
     eprintln!("instances: {}", instances.count());
+    pipeline.upload(&device, &queue, [W as f32, H as f32], &instances);
 
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: None,
@@ -86,6 +122,7 @@ fn main() {
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
+
     let mut enc = device.create_command_encoder(&Default::default());
     {
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -127,6 +164,7 @@ fn main() {
         },
     );
     queue.submit(Some(enc.finish()));
+
     let slice = readback.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
     device.poll(wgpu::PollType::Wait).unwrap();

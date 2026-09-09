@@ -1,17 +1,21 @@
 //! The event loop.
 //!
 //! Input goes one way: winit event, to [`Chord`], to [`Command`] through the
-//! active keymap, to the buffer. This file contains no opinion about what any
-//! key does — swap the keymap and every binding changes with it. The one thing
-//! it decides for itself is that a printable key with no binding is text, and
-//! even that becomes a [`Command::InsertText`] before it reaches the buffer.
+//! active keymap, to [`Editor`]. This file has no opinion about what any key
+//! does — swap the keymap and every binding changes with it. The one thing it
+//! decides for itself is that a printable key with no binding is text, and even
+//! that becomes a [`Command::InsertText`] before it reaches the editor.
+//!
+//! What is left here is the window: pixels, the pointer, the clipboard, and
+//! scrolling in fractions of a line. Everything else moved into `aitch-core`
+//! so the harness can drive it.
 //!
 //! [`Chord`]: aitch_core::Chord
 
 use std::error::Error;
 use std::sync::Arc;
 
-use aitch_core::{Applied, Command, Context, Document, Keymap, Viewport};
+use aitch_core::{Command, Document, Editor, Outcome};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -33,7 +37,7 @@ pub fn run(document: Document) -> Result<(), Box<dyn Error>> {
     // render loop is the one way to fail that budget by construction.
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let mut app = App::new(document);
+    let mut app = App::new(Editor::new(document));
     event_loop.run_app(&mut app)?;
 
     match app.failure {
@@ -46,23 +50,12 @@ struct App {
     window: Option<Arc<Window>>,
     surface: Option<Surface>,
     theme: Theme,
-
-    document: Document,
-    viewport: Viewport,
-    keymap: Keymap,
-    context: Context,
+    editor: Editor,
 
     /// The system clipboard. `None` if the platform would not give us one —
-    /// a headless session, say — in which case copy and paste do nothing
-    /// rather than taking the editor down with them.
+    /// a headless session, say — in which case copy and paste say so rather
+    /// than taking the editor down with them.
     clipboard: Option<arboard::Clipboard>,
-
-    /// Set when quit was asked for on a modified buffer. The next quit goes
-    /// through. Phase 3 replaces this with a real prompt on the prompt line;
-    /// until then the window title carries the warning.
-    quit_armed: bool,
-    /// A transient message shown in the title bar, for the same reason.
-    message: Option<String>,
 
     /// Distance from the top of the document in physical pixels.
     ///
@@ -82,18 +75,13 @@ struct App {
 }
 
 impl App {
-    fn new(document: Document) -> App {
+    fn new(editor: Editor) -> App {
         App {
             window: None,
             surface: None,
             theme: Theme::default(),
-            document,
-            viewport: Viewport::new(1),
-            keymap: Keymap::nano(),
-            context: Context::Editor,
+            editor,
             clipboard: arboard::Clipboard::new().ok(),
-            quit_armed: false,
-            message: None,
             scroll: 0.0,
             modifiers: ModifiersState::empty(),
             pointer: PhysicalPosition::new(0.0, 0.0),
@@ -114,50 +102,41 @@ impl App {
         }
     }
 
-    /// Filename, modified marker, and any transient message.
-    ///
-    /// The title is doing the status line's job until Phase 3 builds one.
+    /// The window title. The status line carries the detail; this is just
+    /// enough to pick the window out of a task bar.
     fn title(&self) -> String {
-        let modified = if self.document.is_dirty() { "*" } else { "" };
-        match &self.message {
-            Some(message) => format!("{modified}{} — {message}", self.document.display_name()),
-            None => format!("{modified}{} — Aitch", self.document.display_name()),
-        }
+        let modified = if self.editor.document().is_dirty() {
+            "*"
+        } else {
+            ""
+        };
+        format!(
+            "{modified}{} — Aitch",
+            self.editor.document().display_name()
+        )
     }
 
-    fn refresh_title(&mut self) {
-        let title = self.title();
+    fn refresh_title(&self) {
         if let Some(window) = &self.window {
-            window.set_title(&title);
+            window.set_title(&self.title());
         }
     }
 
-    fn say(&mut self, message: impl Into<String>) {
-        self.message = Some(message.into());
-        self.refresh_title();
-    }
-
-    fn clear_message(&mut self) {
-        if self.message.take().is_some() {
-            self.refresh_title();
-        }
-    }
-
-    /// The furthest the document can scroll: the last line at the top.
+    /// The furthest the document can scroll: its last line at the top.
     fn max_scroll(&self, line_height: f64) -> f64 {
-        (self.document.buffer.len_lines().saturating_sub(1)) as f64 * line_height
+        self.editor.buffer().len_lines().saturating_sub(1) as f64 * line_height
     }
 
     /// Derive the viewport from the scroll position.
     fn viewport_from_scroll(&mut self, line_height: f64) {
         let first = (self.scroll / line_height).floor() as usize;
-        let lines = self.document.buffer.len_lines();
-        self.viewport.scroll_to(first, lines);
+        let lines = self.editor.buffer().len_lines();
+        self.editor.viewport_mut().scroll_to(first, lines);
     }
 
     /// Snap the scroll position to the viewport, after the cursor moved it.
     fn scroll_from_viewport(&mut self, line_height: f64) {
-        self.scroll = self.viewport.first_line() as f64 * line_height;
+        self.scroll = self.editor.viewport().first_line() as f64 * line_height;
     }
 
     fn scroll_by(&mut self, delta: f64, line_height: f64) {
@@ -170,113 +149,67 @@ impl App {
         }
     }
 
-    /// Run one command, then let the view follow.
+    /// Run one command through the editor and act on what it asks for.
     fn dispatch(&mut self, event_loop: &ActiveEventLoop, command: Command, line_height: f64) {
-        // Any command that is not a second quit disarms the confirmation.
-        if !matches!(command, Command::Quit) {
-            self.quit_armed = false;
-            self.clear_message();
-        }
-
         self.viewport_from_scroll(line_height);
-        match self.document.buffer.apply(&command, &self.viewport) {
-            Applied::Changed => {
-                self.document.buffer.follow_cursor(&mut self.viewport);
-                self.scroll_from_viewport(line_height);
-                self.generation += 1;
-                self.refresh_title();
-                self.redraw();
+        let outcome = self.editor.run(&command);
+
+        let redraws = outcome.redraws();
+        match outcome {
+            Outcome::Quit => {
+                event_loop.exit();
                 return;
             }
-            Applied::Unchanged => return,
-            // Not the buffer's business. Ours, then.
-            Applied::Unhandled => {}
+            Outcome::Copy(text) => self.copy(text),
+            Outcome::Paste => self.paste(event_loop, line_height),
+            Outcome::Redraw | Outcome::Nothing => {}
         }
 
-        match command {
-            Command::Quit => self.quit(event_loop),
-            Command::WriteOut => self.save(),
-            Command::Copy => self.copy(),
-            Command::Paste => self.paste(line_height),
-            Command::SwitchProfile(profile) => {
-                if let Some(keymap) = Keymap::by_name(&profile) {
-                    self.keymap = keymap;
-                    self.say(format!("{profile} keys"));
-                }
-            }
-            // Everything else is a later phase: search, the tree, the prompt.
-            // Saying so beats a key that silently does nothing.
-            other => self.say(format!("{other} is not built yet")),
-        }
-    }
-
-    fn quit(&mut self, event_loop: &ActiveEventLoop) {
-        if !self.document.is_dirty() || self.quit_armed {
-            event_loop.exit();
-            return;
-        }
-        // Phase 3 turns this into a proper prompt-line question.
-        self.quit_armed = true;
-        self.say("unsaved changes — press quit again to discard");
-    }
-
-    fn save(&mut self) {
-        match self.document.save() {
-            Ok(()) => {
-                let lines = self.document.buffer.len_lines();
-                self.say(format!("wrote {lines} lines"));
-            }
-            Err(e) => self.say(format!("{e}")),
-        }
-        self.refresh_title();
-        self.redraw();
-    }
-
-    fn copy(&mut self) {
-        let Some(text) = self.document.buffer.selected_text() else {
-            self.say("nothing selected");
-            return;
-        };
-        match self.clipboard.as_mut() {
-            Some(clipboard) => match clipboard.set_text(text) {
-                Ok(()) => self.say("copied"),
-                Err(e) => self.say(format!("clipboard: {e}")),
-            },
-            None => self.say("no clipboard on this system"),
-        }
-    }
-
-    fn paste(&mut self, line_height: f64) {
-        let text = match self.clipboard.as_mut() {
-            Some(clipboard) => match clipboard.get_text() {
-                Ok(text) => text,
-                Err(e) => return self.say(format!("clipboard: {e}")),
-            },
-            None => return self.say("no clipboard on this system"),
-        };
-        if text.is_empty() {
-            return;
-        }
-        // Back through the front door: the UI does not mutate the buffer.
-        self.dispatch_text(text, line_height);
-    }
-
-    /// Insert text as a command, the way a keystroke would.
-    fn dispatch_text(&mut self, text: String, line_height: f64) {
-        self.viewport_from_scroll(line_height);
-        let command = Command::InsertText(text);
-        if self.document.buffer.apply(&command, &self.viewport) == Applied::Changed {
-            self.document.buffer.follow_cursor(&mut self.viewport);
-            self.scroll_from_viewport(line_height);
+        if redraws {
             self.generation += 1;
+            self.scroll_from_viewport(line_height);
             self.refresh_title();
             self.redraw();
         }
     }
 
-    /// Map a pointer position to a buffer position, if it lands on text.
+    fn copy(&mut self, text: String) {
+        match self.clipboard.as_mut() {
+            Some(clipboard) => match clipboard.set_text(text) {
+                Ok(()) => self.editor.say("copied"),
+                Err(e) => self.editor.say(format!("clipboard: {e}")),
+            },
+            None => self.editor.say("no clipboard on this system"),
+        }
+    }
+
+    fn paste(&mut self, event_loop: &ActiveEventLoop, line_height: f64) {
+        let text = match self.clipboard.as_mut() {
+            Some(clipboard) => match clipboard.get_text() {
+                Ok(text) => text,
+                Err(e) => return self.editor.say(format!("clipboard: {e}")),
+            },
+            None => return self.editor.say("no clipboard on this system"),
+        };
+        if !text.is_empty() {
+            // Back through the front door: the UI does not touch the buffer.
+            self.dispatch(event_loop, Command::InsertText(text), line_height);
+        }
+    }
+
+    /// Map a pointer position to a place in the document, if it is over one.
     fn position_at_pointer(&self, line_height: f64) -> Option<aitch_core::Position> {
+        // The chrome at the bottom is not the document, and neither is the
+        // help pane; a click on either must not move the cursor.
         let surface = self.surface.as_ref()?;
+        if self.editor.help().is_some() {
+            return None;
+        }
+        let text_height = surface.visible_lines() as f64 * line_height;
+        if self.pointer.y >= text_height {
+            return None;
+        }
+
         let offset = (self.scroll % line_height) as f32;
         surface.hit(self.pointer.x as f32, self.pointer.y as f32, offset)
     }
@@ -300,7 +233,8 @@ impl ApplicationHandler for App {
 
         match Surface::new(window.clone()) {
             Ok(surface) => {
-                self.viewport.set_height_lines(surface.visible_lines());
+                let lines = surface.visible_lines();
+                self.editor.viewport_mut().set_height_lines(lines);
                 self.surface = Some(surface);
             }
             Err(e) => return self.fail(event_loop, e.to_string()),
@@ -319,9 +253,9 @@ impl ApplicationHandler for App {
 
         match event {
             WindowEvent::CloseRequested => {
-                // The window manager's close button asks the same question
-                // the quit command does.
-                self.quit(event_loop);
+                // The window manager's close button asks the same question the
+                // quit command does, unsaved-changes prompt and all.
+                self.dispatch(event_loop, Command::Quit, line_height);
             }
 
             WindowEvent::Resized(size) => {
@@ -330,7 +264,7 @@ impl ApplicationHandler for App {
                 };
                 surface.resize(size);
                 let lines = surface.visible_lines();
-                self.viewport.set_height_lines(lines);
+                self.editor.viewport_mut().set_height_lines(lines);
                 self.generation += 1;
                 self.redraw();
             }
@@ -344,7 +278,7 @@ impl ApplicationHandler for App {
                 };
                 surface.set_scale_factor(scale_factor);
                 let lines = surface.visible_lines();
-                self.viewport.set_height_lines(lines);
+                self.editor.viewport_mut().set_height_lines(lines);
                 self.generation += 1;
             }
 
@@ -358,15 +292,17 @@ impl ApplicationHandler for App {
                 }
 
                 if let Some(chord) = chord_from_event(&event, self.modifiers) {
-                    if let Some(command) = self.keymap.resolve(self.context, chord).cloned() {
+                    let context = self.editor.context();
+                    let command = self.editor.keymap().resolve(context, chord).cloned();
+                    if let Some(command) = command {
                         self.dispatch(event_loop, command, line_height);
                         return;
                     }
                 }
 
-                // Unbound and printable: this is text, not a shortcut. Ctrl
-                // and Alt combinations are never text, whatever the OS says
-                // the key produced.
+                // Unbound and printable: this is text, not a shortcut. Ctrl and
+                // Alt combinations are never text, whatever the OS reports the
+                // key as having produced.
                 if self.modifiers.control_key() || self.modifiers.alt_key() {
                     return;
                 }
@@ -375,9 +311,7 @@ impl ApplicationHandler for App {
                 };
                 let typed: String = text.chars().filter(|c| !c.is_control()).collect();
                 if !typed.is_empty() {
-                    self.clear_message();
-                    self.quit_armed = false;
-                    self.dispatch_text(typed, line_height);
+                    self.dispatch(event_loop, Command::InsertText(typed), line_height);
                 }
             }
 
@@ -387,9 +321,9 @@ impl ApplicationHandler for App {
                     // Dragging extends from wherever the press landed, which
                     // the mark is already holding.
                     if let Some(target) = self.position_at_pointer(line_height) {
-                        let at = self.document.buffer.position_to_char(target);
-                        if at != self.document.buffer.cursor_char() {
-                            self.document.buffer.set_cursor_extending(target);
+                        let at = self.editor.buffer().position_to_char(target);
+                        if at != self.editor.buffer().cursor_char() {
+                            self.editor.buffer_mut().set_cursor_extending(target);
                             self.redraw();
                         }
                     }
@@ -403,9 +337,9 @@ impl ApplicationHandler for App {
             } => match state {
                 ElementState::Pressed => {
                     if let Some(position) = self.position_at_pointer(line_height) {
-                        self.document.buffer.set_cursor(position);
+                        self.editor.buffer_mut().set_cursor(position);
                         // Drop a mark here so a drag has something to drag from.
-                        self.document.buffer.set_mark();
+                        self.editor.buffer_mut().set_mark();
                         self.dragging = true;
                         self.redraw();
                     }
@@ -414,8 +348,8 @@ impl ApplicationHandler for App {
                     self.dragging = false;
                     // A click with no drag leaves a mark and no selection,
                     // which would surprise the next movement key.
-                    if !self.document.buffer.has_selection() {
-                        self.document.buffer.clear_selection();
+                    if !self.editor.buffer().has_selection() {
+                        self.editor.buffer_mut().clear_selection();
                     }
                 }
             },
@@ -436,7 +370,7 @@ impl ApplicationHandler for App {
 
             WindowEvent::RedrawRequested => {
                 self.viewport_from_scroll(line_height);
-                let first_line = self.viewport.first_line();
+                let first_line = self.editor.viewport().first_line();
                 let offset = (self.scroll - first_line as f64 * line_height) as f32;
                 let theme = self.theme;
                 let generation = self.generation;
@@ -444,13 +378,7 @@ impl ApplicationHandler for App {
                 let Some(surface) = self.surface.as_mut() else {
                     return;
                 };
-                let result = surface.render(
-                    &self.document.buffer,
-                    first_line,
-                    offset,
-                    generation,
-                    &theme,
-                );
+                let result = surface.render(&self.editor, offset, generation, &theme);
                 if let Err(e) = result {
                     self.fail(event_loop, e.to_string());
                 }

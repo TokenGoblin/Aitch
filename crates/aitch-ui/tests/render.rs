@@ -127,11 +127,24 @@ fn draw(gpu: &Gpu, buffer: &Buffer, theme: &Theme) -> Vec<u8> {
         !instances.is_empty(),
         "nothing was queued to draw, so nothing could appear"
     );
+    render_instances(gpu, &mut pipeline, &atlas, &instances, theme)
+}
+
+/// Draw prepared instances to an offscreen texture and read the pixels back.
+fn render_instances(
+    gpu: &Gpu,
+    pipeline: &mut QuadPipeline,
+    atlas: &Atlas,
+    instances: &Instances,
+    theme: &Theme,
+) -> Vec<u8> {
+    // Easy to forget when this was split out of `draw`, and the symptom is a
+    // frame of pure background with no hint that anything was skipped.
     pipeline.upload(
         &gpu.device,
         &gpu.queue,
         [WIDTH as f32, HEIGHT as f32],
-        &instances,
+        instances,
     );
 
     let target = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -178,7 +191,7 @@ fn draw(gpu: &Gpu, buffer: &Buffer, theme: &Theme) -> Vec<u8> {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
-        pipeline.draw(&mut pass, atlas.bind_group(), &instances);
+        pipeline.draw(&mut pass, atlas.bind_group(), instances);
     }
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
@@ -401,5 +414,126 @@ fn the_gpu_requirement_reads_its_value() {
         (Some("  "), false),
     ] {
         assert_eq!(required_from(value), expected, "for {value:?}");
+    }
+}
+
+// -- the chrome: status line, prompt line, footer ---------------------------
+
+/// Draw a whole editor screen offscreen, through the same code the window uses.
+fn draw_screen(gpu: &Gpu, editor: &aitch_core::Editor, theme: &Theme) -> Vec<u8> {
+    use aitch_ui::render::screen::{self, Layout};
+
+    let mut atlas = Atlas::new(&gpu.device, &gpu.queue, 1024);
+    let mut pipeline = QuadPipeline::new(&gpu.device, FORMAT, atlas.bind_group_layout());
+    let mut text = TextRenderer::new(14.0, 1.0);
+    let mut instances = Instances::default();
+
+    screen::draw(
+        &gpu.queue,
+        &mut atlas,
+        &mut text,
+        &mut instances,
+        editor,
+        theme,
+        Layout {
+            size: (WIDTH as f32, HEIGHT as f32),
+            scale_factor: 1.0,
+            sub_line_offset: 0.0,
+            generation: 0,
+        },
+    );
+    assert!(!instances.is_empty(), "nothing was queued to draw");
+
+    render_instances(gpu, &mut pipeline, &atlas, &instances, theme)
+}
+
+/// The bottom three rows: one status or prompt line, then the two footer rows.
+fn chrome_rows(gpu: &Gpu) -> std::ops::Range<usize> {
+    let text = TextRenderer::new(14.0, 1.0);
+    let line_height = text.line_height();
+    let _ = gpu;
+    let rows = aitch_ui::render::screen::text_rows(&text, HEIGHT as f32);
+    let top = (rows as f32 * line_height) as usize;
+    top..HEIGHT as usize
+}
+
+#[test]
+fn the_footer_reaches_the_framebuffer() {
+    let Some(gpu) = gpu() else { return };
+    let theme = Theme::dark();
+
+    let mut document = aitch_core::Document::blank();
+    document.buffer = Buffer::from_str("some text\n");
+    let editor = aitch_core::Editor::new(document);
+
+    let pixels = draw_screen(&gpu, &editor, &theme);
+    let chrome = chrome_rows(&gpu);
+
+    // The footer is drawn on a bar with reversed chords, so the bottom rows
+    // carry a great deal more ink than the mostly empty text area above them.
+    let lit_in_chrome: usize = chrome.clone().filter_map(|y| lit_span(&pixels, y)).count();
+    assert!(
+        lit_in_chrome >= 3,
+        "the bottom of the window has no footer on it"
+    );
+
+    // And it spans the width rather than hugging the left margin.
+    let widest = chrome
+        .filter_map(|y| lit_span(&pixels, y))
+        .map(|(_, last)| last)
+        .max()
+        .unwrap_or(0);
+    assert!(
+        widest > WIDTH as usize / 2,
+        "the footer only reached x={widest}, so it is not laid out across"
+    );
+}
+
+#[test]
+fn a_prompt_takes_over_the_status_line_without_a_third_footer_row() {
+    let Some(gpu) = gpu() else { return };
+    let theme = Theme::dark();
+
+    let mut document = aitch_core::Document::blank();
+    document.buffer = Buffer::from_str("alpha beta gamma\n");
+    let mut editor = aitch_core::Editor::new(document);
+    editor.viewport_mut().set_height_lines(10);
+
+    let before = draw_screen(&gpu, &editor, &theme);
+
+    // Open a search and type into it.
+    editor.run(&aitch_core::Command::WhereIs);
+    for c in "beta".chars() {
+        editor.run(&aitch_core::Command::InsertText(c.to_string()));
+    }
+    let after = draw_screen(&gpu, &editor, &theme);
+
+    assert!(
+        lit_pixels(&before).0 != lit_pixels(&after).0,
+        "the prompt did not change what is on screen"
+    );
+
+    // The chrome is still exactly three rows: the prompt replaced the status
+    // line rather than pushing the footer down or growing a third row.
+    let chrome = chrome_rows(&gpu);
+    let rows_with_ink = chrome.clone().filter_map(|y| lit_span(&after, y)).count();
+    let before_rows = chrome.filter_map(|y| lit_span(&before, y)).count();
+    assert!(
+        rows_with_ink > 0 && before_rows > 0,
+        "the chrome should have ink in both frames"
+    );
+
+    // A third footer row would put ink below the three-row chrome bar. The
+    // window is taller than the bar, so those rows must stay empty.
+    let text = TextRenderer::new(14.0, 1.0);
+    let line_height = text.line_height();
+    let rows = aitch_ui::render::screen::text_rows(&text, HEIGHT as f32);
+    let below_chrome =
+        ((rows as f32 + aitch_ui::render::screen::CHROME_ROWS as f32) * line_height) as usize;
+    for y in below_chrome..HEIGHT as usize {
+        assert!(
+            lit_span(&after, y).is_none(),
+            "ink at row {y}, below the three rows of chrome"
+        );
     }
 }

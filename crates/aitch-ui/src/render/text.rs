@@ -32,6 +32,9 @@ pub struct TextRenderer {
     font_system: FontSystem,
     swash: SwashCache,
     layout: cosmic_text::Buffer,
+    /// A scratch buffer for one-off lines — status, prompt, footer, help.
+    /// Kept separate so shaping chrome never disturbs the document's layout.
+    chrome: cosmic_text::Buffer,
     /// Logical font size; physical metrics are derived from it and the scale.
     font_size: f32,
     scale_factor: f32,
@@ -52,12 +55,16 @@ impl TextRenderer {
         // the viewport is built on.
         layout.set_wrap(&mut font_system, Wrap::None);
 
+        let mut chrome = cosmic_text::Buffer::new(&mut font_system, metrics);
+        chrome.set_wrap(&mut font_system, Wrap::None);
+
         let cell_width = measure_cell_width(&mut font_system, metrics);
 
         TextRenderer {
             font_system,
             swash: SwashCache::new(),
             layout,
+            chrome,
             font_size,
             scale_factor,
             cell_width,
@@ -92,6 +99,7 @@ impl TextRenderer {
         self.scale_factor = scale_factor;
         let metrics = metrics_for(self.font_size, scale_factor);
         self.layout.set_metrics(&mut self.font_system, metrics);
+        self.chrome.set_metrics(&mut self.font_system, metrics);
         self.cell_width = measure_cell_width(&mut self.font_system, metrics);
         self.shaped = None;
         true
@@ -247,6 +255,59 @@ impl TextRenderer {
                 theme.selection,
             );
         }
+    }
+
+    /// Draw one line of text at a physical-pixel position.
+    ///
+    /// Used for everything that is not the document: the status line, the
+    /// prompt, the footer and the help pane. Returns the width drawn, so a
+    /// caller laying out cells left to right knows where the next one goes.
+    pub fn push_line(
+        &mut self,
+        queue: &wgpu::Queue,
+        atlas: &mut Atlas,
+        instances: &mut Instances,
+        text: &str,
+        at: (f32, f32),
+        color: crate::theme::Color,
+    ) -> f32 {
+        if text.is_empty() {
+            return 0.0;
+        }
+
+        let TextRenderer {
+            font_system,
+            swash,
+            chrome,
+            ..
+        } = self;
+
+        chrome.set_text(
+            font_system,
+            text,
+            &Attrs::new().family(Family::Monospace),
+            Shaping::Advanced,
+            None,
+        );
+        chrome.shape_until_scroll(font_system, false);
+
+        let mut width: f32 = 0.0;
+        for run in chrome.layout_runs() {
+            for glyph in run.glyphs {
+                let physical = glyph.physical((0.0, 0.0), 1.0);
+                let Some(entry) = atlas.glyph(queue, font_system, swash, physical.cache_key) else {
+                    continue;
+                };
+                let position = [
+                    at.0 + physical.x as f32 + entry.offset[0],
+                    at.1 + run.line_y + physical.y as f32 + entry.offset[1],
+                ];
+                let kind = if entry.color { Kind::Color } else { Kind::Mask };
+                instances.push(position, entry, color, kind);
+            }
+            width = width.max(run.line_w);
+        }
+        width
     }
 
     fn push_cursor(

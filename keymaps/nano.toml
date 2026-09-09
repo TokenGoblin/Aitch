@@ -514,17 +514,29 @@ priority = 99
 
 [[binding]]
 context = "search"
-chords = ["M-W", "Down", "F3"]
+chords = ["M-W", "F3"]
 command = "where-is-next"
 label = "Next"
 priority = 98
 
 [[binding]]
 context = "search"
-chords = ["M-Q", "Up", "Shift+F3"]
+chords = ["M-Q", "Shift+F3"]
 command = "where-is-prev"
 label = "Prev"
 priority = 97
+
+# At a search prompt the arrows walk past searches, the way nano's do. The
+# match keys are M-W and M-Q, which is also where nano puts them.
+[[binding]]
+context = "search"
+chords = ["Up", "^P"]
+command = "prompt-history-prev"
+
+[[binding]]
+context = "search"
+chords = ["Down", "^N"]
+command = "prompt-history-next"
 
 [[binding]]
 context = "search"
