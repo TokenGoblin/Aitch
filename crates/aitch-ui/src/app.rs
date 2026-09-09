@@ -15,7 +15,11 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use aitch_core::{Command, Editor, Outcome, Watcher, Workspace};
+use aitch_core::{
+    Command, Config, ConfigError, Editor, Outcome, Position, Session, ThemeChoice, Watcher,
+    Workspace,
+};
+use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -39,10 +43,33 @@ pub enum Wake {
     HighlightsReady,
     /// A project-wide search found more matches.
     SearchResults,
+    /// `aitchrc.toml` was saved; read it again.
+    ConfigChanged,
 }
 
-/// Open a window on `workspace` and run until it closes.
-pub fn run(workspace: Workspace) -> Result<(), Box<dyn Error>> {
+/// Everything the binary worked out before there was a window.
+pub struct Startup {
+    pub workspace: Workspace,
+    pub config: Config,
+    /// A config that would not load. Shown once there is a status line.
+    pub config_error: Option<ConfigError>,
+    /// Where the config came from, so saving it can take effect live.
+    pub config_path: Option<std::path::PathBuf>,
+    /// What was open last time, when nothing else was asked for.
+    pub session: Option<Session>,
+    /// From `+LINE:COLUMN`, one-based.
+    pub cursor: Option<(usize, usize)>,
+}
+
+/// How long after the last edit to write recovery files.
+///
+/// Long enough that a burst of typing writes once; short enough that the
+/// window of work existing only in memory stays small. The timer is armed
+/// only while something is unsaved, so an idle editor still costs nothing.
+const RECOVERY_DELAY: Duration = Duration::from_secs(2);
+
+/// Open a window and run until it closes.
+pub fn run(startup: Startup) -> Result<(), Box<dyn Error>> {
     let event_loop = EventLoop::<Wake>::with_user_event().build()?;
     // Event-driven redraw only. PLAN.md §6: idle CPU is 0%, and a spinning
     // render loop is the one way to fail that budget by construction. The
@@ -50,8 +77,44 @@ pub fn run(workspace: Workspace) -> Result<(), Box<dyn Error>> {
     // message rather than a poll.
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let root = workspace.root().map(std::path::Path::to_path_buf);
-    let mut app = App::new(Editor::with_workspace(workspace));
+    let Startup {
+        workspace,
+        config,
+        config_error,
+        config_path,
+        session,
+        cursor,
+    } = startup;
+
+    let mut editor = Editor::with_workspace(workspace);
+    editor.apply_config(config.clone());
+
+    if let Some(session) = &session {
+        editor.restore_session(session);
+    }
+    if let Some((line, column)) = cursor {
+        let last = editor.buffer().len_lines().saturating_sub(1);
+        editor.buffer_mut().set_cursor(Position::new(
+            line.saturating_sub(1).min(last),
+            column.saturating_sub(1),
+        ));
+    }
+    if let Some(error) = &config_error {
+        editor.say(error.to_string());
+    }
+
+    // Anything left behind by a run that did not end cleanly.
+    editor.offer_recovery();
+
+    let root = editor.workspace().root().map(std::path::Path::to_path_buf);
+    let mut app = App::new(editor);
+    app.config_path = config_path;
+    app.config_complaint = config_error.as_ref().map(ToString::to_string);
+    app.theme = match config.theme {
+        ThemeChoice::Dark => Theme::dark(),
+        ThemeChoice::Light => Theme::light(),
+    };
+    app.font = config.font.clone();
 
     if let Some(root) = root {
         let proxy = event_loop.create_proxy();
@@ -59,6 +122,16 @@ pub fn run(workspace: Workspace) -> Result<(), Box<dyn Error>> {
             // The loop may already be gone; nothing to do about it here.
             let _ = proxy.send_event(Wake::FolderChanged);
         });
+    }
+
+    // The config is watched so that saving it takes effect without a restart.
+    if let Some(path) = app.config_path.clone() {
+        if let Some(directory) = path.parent().map(std::path::Path::to_path_buf) {
+            let proxy = event_loop.create_proxy();
+            app.config_watcher = Watcher::new(&directory, move || {
+                let _ = proxy.send_event(Wake::ConfigChanged);
+            });
+        }
     }
 
     // Parsing and project search both run on their own threads; this is how
@@ -91,6 +164,18 @@ struct App {
     /// `None` when there is no folder, or the platform will not watch.
     watcher: Option<Watcher>,
 
+    /// The font to draw with, from the config.
+    font: aitch_core::config::FontConfig,
+    /// When to write recovery files, or `None` when nothing is unsaved.
+    recovery_due: Option<Instant>,
+    /// Where the config came from, so a change to it can be picked up.
+    config_path: Option<std::path::PathBuf>,
+    /// What the config last said, so that a change to some other file in the
+    /// same directory does not announce itself as a settings reload.
+    config_complaint: Option<String>,
+    /// Watches that file. Held so dropping the app stops it.
+    config_watcher: Option<Watcher>,
+
     /// Distance from the top of the document in physical pixels.
     ///
     /// The source of truth for scrolling: the viewport's first line is derived
@@ -117,6 +202,11 @@ impl App {
             editor,
             clipboard: arboard::Clipboard::new().ok(),
             watcher: None,
+            font: aitch_core::config::FontConfig::default(),
+            recovery_due: None,
+            config_path: None,
+            config_complaint: None,
+            config_watcher: None,
             scroll: 0.0,
             modifiers: ModifiersState::empty(),
             pointer: PhysicalPosition::new(0.0, 0.0),
@@ -124,6 +214,18 @@ impl App {
             generation: 0,
             failure: None,
         }
+    }
+
+    /// Leaving deliberately: remember what was open, and drop the recovery
+    /// files, whose whole purpose was to survive *not* leaving deliberately.
+    fn finish(&mut self) {
+        let session = self.editor.session();
+        if session.is_empty() {
+            Session::clear();
+        } else {
+            session.save();
+        }
+        self.editor.discard_recovery();
     }
 
     fn fail(&mut self, event_loop: &ActiveEventLoop, message: String) {
@@ -193,6 +295,7 @@ impl App {
         let redraws = outcome.redraws();
         match outcome {
             Outcome::Quit => {
+                self.finish();
                 event_loop.exit();
                 return;
             }
@@ -206,7 +309,66 @@ impl App {
             self.scroll_from_viewport(line_height);
             self.refresh_title();
             self.redraw();
+            self.arm_recovery(event_loop);
         }
+    }
+
+    /// Schedule a recovery write, or cancel one that is no longer needed.
+    ///
+    /// Waking the loop on a timer is the one thing that could break the
+    /// zero-idle-CPU budget, so the timer exists only while there is unsaved
+    /// work to protect and is stood down the moment there is not.
+    fn arm_recovery(&mut self, event_loop: &ActiveEventLoop) {
+        if self.editor.needs_recovery() {
+            let due = Instant::now() + RECOVERY_DELAY;
+            self.recovery_due = Some(due);
+            event_loop.set_control_flow(ControlFlow::WaitUntil(due));
+        } else if self.recovery_due.take().is_some() {
+            // Everything is saved; the files that were holding it can go.
+            self.editor.discard_recovery();
+            event_loop.set_control_flow(ControlFlow::Wait);
+        }
+    }
+
+    /// Read `aitchrc.toml` again and apply it.
+    ///
+    /// Live reload matters most for the settings you are experimenting with —
+    /// the theme, the font, the tab width — and restarting to see each one is
+    /// what makes people give up on a config file.
+    fn reload_config(&mut self) {
+        let (config, error) = match &self.config_path {
+            Some(path) => Config::load_from(path),
+            None => Config::load(),
+        };
+
+        // The watcher covers the whole directory, because that is the only
+        // way to hear about a file being replaced rather than written in
+        // place. Saving something else in there is not a settings change.
+        let complaint = error.as_ref().map(ToString::to_string);
+        if config == *self.editor.config() && complaint == self.config_complaint {
+            return;
+        }
+        self.config_complaint = complaint;
+
+        self.theme = match config.theme {
+            ThemeChoice::Dark => Theme::dark(),
+            ThemeChoice::Light => Theme::light(),
+        };
+
+        // The font is settled when the surface is built, so a change to it
+        // needs a new one rather than a redraw.
+        let font_changed = config.font != self.font;
+        self.font = config.font.clone();
+        self.editor.apply_config(config);
+
+        match error {
+            Some(error) => self.editor.say(error.to_string()),
+            None if font_changed => self.editor.say("settings reloaded — restart for the font"),
+            None => self.editor.say("settings reloaded"),
+        }
+
+        self.generation += 1;
+        self.redraw();
     }
 
     fn copy(&mut self, text: String) {
@@ -252,6 +414,23 @@ impl App {
 }
 
 impl ApplicationHandler<Wake> for App {
+    /// Called before the loop sleeps. Writes recovery files when their delay
+    /// has passed, then goes back to waiting for events.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(due) = self.recovery_due else {
+            return;
+        };
+        if Instant::now() < due {
+            // Not yet: keep sleeping until it is.
+            event_loop.set_control_flow(ControlFlow::WaitUntil(due));
+            return;
+        }
+
+        self.editor.write_recovery();
+        self.recovery_due = None;
+        event_loop.set_control_flow(ControlFlow::Wait);
+    }
+
     /// Woken from outside: the folder changed.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: Wake) {
         match event {
@@ -262,6 +441,8 @@ impl ApplicationHandler<Wake> for App {
                     self.redraw();
                 }
             }
+            Wake::ConfigChanged => self.reload_config(),
+
             Wake::HighlightsReady | Wake::SearchResults => {
                 let colours = self.editor.poll_highlights();
                 let results = self.editor.poll_search();
@@ -289,7 +470,7 @@ impl ApplicationHandler<Wake> for App {
             Err(e) => return self.fail(event_loop, format!("could not open a window: {e}")),
         };
 
-        match Surface::new(window.clone()) {
+        match Surface::with_font(window.clone(), self.font.size, self.font.family.clone()) {
             Ok(surface) => {
                 let lines = surface.visible_lines();
                 self.editor.viewport_mut().set_height_lines(lines);

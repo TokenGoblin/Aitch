@@ -12,6 +12,18 @@ use crate::render::atlas::Atlas;
 use crate::render::quads::{Instances, Kind};
 use crate::theme::Theme;
 
+/// The attributes to shape with: the configured family, or whatever the
+/// system calls monospace.
+///
+/// A family that is not installed falls through to the fallback chain rather
+/// than failing, which is why an unknown name is not an error.
+fn attrs(family: Option<&str>) -> Attrs<'_> {
+    match family {
+        Some(name) => Attrs::new().family(Family::Name(name)),
+        None => Attrs::new().family(Family::Monospace),
+    }
+}
+
 /// One visible line's whitespace marks: which line, where its top is, and the
 /// byte offset and x position of each glyph on it.
 type LineMarks = (usize, f32, Vec<(usize, f32)>);
@@ -48,11 +60,21 @@ pub struct TextRenderer {
     first_line: usize,
     /// Width of the text area in physical pixels, for full-width bands.
     width: f32,
+    /// The configured font family, if one was asked for.
+    family: Option<String>,
     shaped: Option<ShapeKey>,
 }
 
 impl TextRenderer {
     pub fn new(font_size: f32, scale_factor: f32) -> TextRenderer {
+        TextRenderer::with_family(font_size, scale_factor, None)
+    }
+
+    /// The same, with a font family from the config.
+    ///
+    /// A family that is not installed falls back to whatever the system calls
+    /// monospace, which is better than refusing to draw.
+    pub fn with_family(font_size: f32, scale_factor: f32, family: Option<String>) -> TextRenderer {
         let mut font_system = FontSystem::new();
         let metrics = metrics_for(font_size, scale_factor);
         let mut layout = cosmic_text::Buffer::new(&mut font_system, metrics);
@@ -64,7 +86,7 @@ impl TextRenderer {
         let mut chrome = cosmic_text::Buffer::new(&mut font_system, metrics);
         chrome.set_wrap(&mut font_system, Wrap::None);
 
-        let cell_width = measure_cell_width(&mut font_system, metrics);
+        let cell_width = measure_cell_width(&mut font_system, metrics, family.as_deref());
 
         TextRenderer {
             font_system,
@@ -77,6 +99,7 @@ impl TextRenderer {
             visible: Vec::new(),
             first_line: 0,
             width: 0.0,
+            family,
             shaped: None,
         }
     }
@@ -107,7 +130,8 @@ impl TextRenderer {
         let metrics = metrics_for(self.font_size, scale_factor);
         self.layout.set_metrics(&mut self.font_system, metrics);
         self.chrome.set_metrics(&mut self.font_system, metrics);
-        self.cell_width = measure_cell_width(&mut self.font_system, metrics);
+        let family = self.family.clone();
+        self.cell_width = measure_cell_width(&mut self.font_system, metrics, family.as_deref());
         self.shaped = None;
         true
     }
@@ -143,10 +167,11 @@ impl TextRenderer {
         let text = self.visible.join("\n");
         self.layout
             .set_size(&mut self.font_system, Some(size.0), Some(size.1));
+        let family = self.family.clone();
         self.layout.set_text(
             &mut self.font_system,
             &text,
-            &Attrs::new().family(Family::Monospace),
+            &attrs(family.as_deref()),
             Shaping::Advanced,
             None,
         );
@@ -481,13 +506,14 @@ impl TextRenderer {
             font_system,
             swash,
             chrome,
+            family,
             ..
         } = self;
 
         chrome.set_text(
             font_system,
             text,
-            &Attrs::new().family(Family::Monospace),
+            &attrs(family.as_deref()),
             Shaping::Advanced,
             None,
         );
@@ -578,16 +604,10 @@ fn metrics_for(font_size: f32, scale_factor: f32) -> Metrics {
 }
 
 /// Shape a single `M` to find the monospace advance width.
-fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics) -> f32 {
+fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics, family: Option<&str>) -> f32 {
     let mut probe = cosmic_text::Buffer::new(font_system, metrics);
     probe.set_wrap(font_system, Wrap::None);
-    probe.set_text(
-        font_system,
-        "M",
-        &Attrs::new().family(Family::Monospace),
-        Shaping::Advanced,
-        None,
-    );
+    probe.set_text(font_system, "M", &attrs(family), Shaping::Advanced, None);
     probe.shape_until_scroll(font_system, false);
 
     probe

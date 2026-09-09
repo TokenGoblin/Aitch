@@ -4,6 +4,49 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Phase 7 — Configuration, sessions and recovery
+
+Added:
+
+- `aitchrc.toml`: theme, keymap, `tab_width`, `expand_tabs`, `line_numbers`,
+  `whitespace`, extra `ignore` rules and `[font]`. Documented in
+  [`docs/config.md`](docs/config.md).
+- **A broken config never stops the editor opening.** A parse error, an
+  unknown key or a keymap that does not exist is reported on the status line
+  and the setting falls back to its default. The keys keep working: better
+  the keymap you had than no keymap at all.
+- The config file is watched, so saving it applies immediately — everything
+  except `[font]`, which is settled when the text atlas is built and says so.
+  A change to some other file in the same folder is not announced as a
+  settings reload.
+- `ignore` rules reach the folder tree, quick open *and* project search, all
+  three of which now share one walker. Same syntax as `.gitignore`, negation
+  included, and the same rule about excluded folders being pruned rather
+  than walked.
+- **Sessions.** Starting with no arguments reopens what was open last time at
+  the cursor positions it had. A file since deleted is skipped without
+  comment; naming a file, a folder or `--no-session` opens that instead.
+- **Crash recovery.** Unsaved work is written a couple of seconds after
+  typing stops and offered back when that file is next opened, as one
+  undoable edit left unsaved so it can be compared before being kept.
+  Recovery files are deleted when you quit deliberately — surviving *not*
+  doing that is their whole purpose — and never deleted in the background,
+  where they might be the only copy of that text.
+- Command line: `--config PATH`, `--no-config`, `--no-session`,
+  `+LINE[:COLUMN]`, `-h`, `-V`, and text on stdin as an unnamed buffer, so
+  `git log | aitch` works and `EDITOR=aitch` behaves.
+
+Fixed:
+
+- Tab is now intercepted before the buffer sees it, so `expand_tabs` actually
+  expands. The `Command::InsertTab` arm it used to reach was unreachable —
+  the buffer answered first — which would have made the setting quietly do
+  nothing.
+
+The recovery timer is the one thing that could have cost idle CPU, so it is
+armed only while something is unsaved and stood down the moment it is saved.
+Idle remains 0.000 s.
+
 ### Phase 6 — Project-wide search
 
 Added:

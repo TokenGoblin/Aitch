@@ -45,6 +45,8 @@ pub enum Kind {
     OverwriteChanged,
     /// Search every file in the folder.
     ProjectSearch,
+    /// Unsaved work from a previous run was found. Put it back?
+    RestoreRecovery { describes: String },
     /// What to put in place of a project-wide match.
     ProjectReplaceWith { find: String },
     /// The plan, before anything is written.
@@ -65,6 +67,7 @@ impl Kind {
                 | Kind::SaveBeforeQuit
                 | Kind::OverwriteChanged
                 | Kind::ProjectReplaceConfirm { .. }
+                | Kind::RestoreRecovery { .. }
         )
     }
 
@@ -111,6 +114,9 @@ impl Kind {
             Kind::ReplaceFind => "Search (to replace)".to_string(),
             Kind::ReplaceWith { find } => format!("Replace {find:?} with"),
             Kind::ProjectSearch => "Search in folder".to_string(),
+            Kind::RestoreRecovery { describes } => {
+                format!("Unsaved work found for {describes}. Restore it?")
+            }
             Kind::ProjectReplaceWith { find } => {
                 format!("Replace {find:?} everywhere with")
             }

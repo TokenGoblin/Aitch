@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 
 use std::sync::mpsc;
 
+use ignore::gitignore::GitignoreBuilder;
 use ignore::{WalkBuilder, WalkState};
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::Matcher;
@@ -61,16 +62,20 @@ pub struct Tree {
     expanded: Vec<PathBuf>,
     rows: Vec<Row>,
     selected: usize,
+    /// Extra ignore rules from the config. Held rather than passed in,
+    /// because a folder is read again every time one is expanded.
+    ignores: Vec<String>,
 }
 
 impl Tree {
     /// Open a folder. Only the root is read; nothing below it is touched.
-    pub fn new(root: PathBuf) -> Tree {
+    pub fn new(root: PathBuf, ignores: &[String]) -> Tree {
         let mut tree = Tree {
             root,
             expanded: Vec::new(),
             rows: Vec::new(),
             selected: 0,
+            ignores: ignores.to_vec(),
         };
         tree.rebuild();
         tree
@@ -177,7 +182,7 @@ impl Tree {
     }
 
     fn push_children(&self, directory: &Path, depth: usize, rows: &mut Vec<Row>) {
-        for (path, is_dir) in read_directory(directory) {
+        for (path, is_dir) in read_directory(directory, &self.ignores) {
             let expanded = is_dir && self.is_expanded(&path);
             rows.push(Row {
                 path: path.clone(),
@@ -192,18 +197,57 @@ impl Tree {
     }
 }
 
-/// One directory's entries, respecting `.gitignore`, folders first.
+/// A walker over `root`, respecting `.gitignore` and the config's own rules.
 ///
-/// An unreadable directory yields nothing rather than an error: a permission
-/// problem three folders down should not take the sidebar with it.
-fn read_directory(directory: &Path) -> Vec<(PathBuf, bool)> {
-    let mut entries: Vec<(PathBuf, bool)> = WalkBuilder::new(directory)
-        .max_depth(Some(1))
+/// The `ignore` crate gives `.gitignore`, `.ignore`, the global one and the
+/// parent chain for free. `extra` is what `aitchrc.toml` adds on top, in the
+/// same syntax, negation included: `["vendor/*", "!vendor/keep.js"]` keeps
+/// the one file.
+///
+/// Excluded directories are pruned rather than walked, which is where the
+/// speed comes from and is also why `["vendor", "!vendor/keep.js"]` does not
+/// work — the folder is never opened, so there is no file there to put back.
+/// Git behaves the same way, and matching it beats being cleverer than the
+/// thing people already know.
+///
+/// A rule that will not compile is skipped rather than fatal: one bad line in
+/// a config should not stop the tree from listing anything at all.
+pub(crate) fn walker(root: &Path, extra: &[String]) -> WalkBuilder {
+    let mut builder = WalkBuilder::new(root);
+    builder
         .hidden(true)
         .git_ignore(true)
         .git_global(true)
         .parents(true)
-        .require_git(false)
+        .require_git(false);
+
+    if !extra.is_empty() {
+        let mut rules = GitignoreBuilder::new(root);
+        for pattern in extra {
+            let _ = rules.add_line(None, pattern);
+        }
+        if let Ok(rules) = rules.build() {
+            builder.filter_entry(move |entry| {
+                // Depth 0 is the root itself. A rule that happens to match it
+                // would otherwise prune the whole project.
+                if entry.depth() == 0 {
+                    return true;
+                }
+                let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
+                !rules.matched(entry.path(), is_dir).is_ignore()
+            });
+        }
+    }
+    builder
+}
+
+/// One directory's entries, respecting `.gitignore`, folders first.
+///
+/// An unreadable directory yields nothing rather than an error: a permission
+/// problem three folders down should not take the sidebar with it.
+fn read_directory(directory: &Path, ignores: &[String]) -> Vec<(PathBuf, bool)> {
+    let mut entries: Vec<(PathBuf, bool)> = walker(directory, ignores)
+        .max_depth(Some(1))
         .build()
         .filter_map(Result::ok)
         // Depth 0 is the directory itself.
@@ -253,33 +297,26 @@ impl PathIndex {
     /// thread finishes, and the walker gives none — so the last partial batch
     /// from each thread would be dropped, leaving files quietly missing from
     /// the index.
-    pub fn build(root: &Path) -> PathIndex {
+    pub fn build(root: &Path, ignores: &[String]) -> PathIndex {
         let (sender, receiver) = mpsc::channel::<String>();
 
-        WalkBuilder::new(root)
-            .hidden(true)
-            .git_ignore(true)
-            .git_global(true)
-            .parents(true)
-            .require_git(false)
-            .build_parallel()
-            .run(|| {
-                let sender = sender.clone();
-                let root = root.to_path_buf();
-                Box::new(move |entry| {
-                    if let Ok(entry) = entry {
-                        if entry.file_type().is_some_and(|t| t.is_file()) {
-                            if let Ok(suffix) = entry.path().strip_prefix(&root) {
-                                // Windows separators, so a query reads the
-                                // same way on either platform.
-                                let path = suffix.to_string_lossy().replace('\\', "/");
-                                let _ = sender.send(path);
-                            }
+        walker(root, ignores).build_parallel().run(|| {
+            let sender = sender.clone();
+            let root = root.to_path_buf();
+            Box::new(move |entry| {
+                if let Ok(entry) = entry {
+                    if entry.file_type().is_some_and(|t| t.is_file()) {
+                        if let Ok(suffix) = entry.path().strip_prefix(&root) {
+                            // Windows separators, so a query reads the
+                            // same way on either platform.
+                            let path = suffix.to_string_lossy().replace('\\', "/");
+                            let _ = sender.send(path);
                         }
                     }
-                    WalkState::Continue
-                })
-            });
+                }
+                WalkState::Continue
+            })
+        });
 
         // Every clone the walker made is gone with its thread; dropping this
         // one closes the channel so the drain below terminates.
@@ -405,7 +442,7 @@ mod tests {
     #[test]
     fn opening_a_folder_shows_only_its_top_level() {
         let scratch = sample();
-        let tree = Tree::new(scratch.0.clone());
+        let tree = Tree::new(scratch.0.clone(), &[]);
 
         assert_eq!(
             labels(&tree),
@@ -417,7 +454,7 @@ mod tests {
     #[test]
     fn gitignored_folders_stay_out_of_the_tree() {
         let scratch = sample();
-        let tree = Tree::new(scratch.0.clone());
+        let tree = Tree::new(scratch.0.clone(), &[]);
         assert!(
             !labels(&tree).iter().any(|row| row.contains("target")),
             "target/ is in .gitignore and must not be listed"
@@ -427,7 +464,7 @@ mod tests {
     #[test]
     fn expanding_a_folder_reveals_its_children_and_folds_them_away_again() {
         let scratch = sample();
-        let mut tree = Tree::new(scratch.0.clone());
+        let mut tree = Tree::new(scratch.0.clone(), &[]);
 
         assert_eq!(tree.activate(), None, "a folder opens rather than opening");
         assert_eq!(
@@ -449,7 +486,7 @@ mod tests {
     #[test]
     fn collapsing_a_folder_forgets_what_was_open_inside_it() {
         let scratch = sample();
-        let mut tree = Tree::new(scratch.0.clone());
+        let mut tree = Tree::new(scratch.0.clone(), &[]);
 
         tree.activate(); // open src/
         tree.move_down();
@@ -468,7 +505,7 @@ mod tests {
     #[test]
     fn activating_a_file_reports_it_rather_than_opening_it() {
         let scratch = sample();
-        let mut tree = Tree::new(scratch.0.clone());
+        let mut tree = Tree::new(scratch.0.clone(), &[]);
         tree.activate(); // src/
         tree.move_down();
         tree.move_down(); // src/lib.rs
@@ -480,7 +517,7 @@ mod tests {
     #[test]
     fn the_selection_stays_on_the_same_row_when_a_folder_opens() {
         let scratch = sample();
-        let mut tree = Tree::new(scratch.0.clone());
+        let mut tree = Tree::new(scratch.0.clone(), &[]);
         let before = tree.selected().unwrap().path.clone();
         tree.activate();
         assert_eq!(tree.selected().unwrap().path, before);
@@ -489,7 +526,7 @@ mod tests {
     #[test]
     fn the_selection_stops_at_both_ends() {
         let scratch = sample();
-        let mut tree = Tree::new(scratch.0.clone());
+        let mut tree = Tree::new(scratch.0.clone(), &[]);
 
         assert!(!tree.move_up(), "already at the top");
         for _ in 0..20 {
@@ -502,7 +539,7 @@ mod tests {
     #[test]
     fn an_empty_folder_has_no_rows_and_does_not_panic() {
         let scratch = Scratch::new("empty");
-        let mut tree = Tree::new(scratch.0.clone());
+        let mut tree = Tree::new(scratch.0.clone(), &[]);
         assert!(tree.is_empty());
         assert!(tree.selected().is_none());
         assert_eq!(tree.activate(), None);
@@ -512,7 +549,7 @@ mod tests {
     #[test]
     fn a_refresh_picks_up_a_new_file_and_keeps_the_selection() {
         let scratch = sample();
-        let mut tree = Tree::new(scratch.0.clone());
+        let mut tree = Tree::new(scratch.0.clone(), &[]);
         let before = tree.selected().unwrap().path.clone();
 
         scratch.file("AAA-new.txt", "added outside the editor");
@@ -527,7 +564,7 @@ mod tests {
     #[test]
     fn the_index_holds_every_file_and_no_folders() {
         let scratch = sample();
-        let index = PathIndex::build(&scratch.0);
+        let index = PathIndex::build(&scratch.0, &[]);
 
         let mut paths = index.paths().to_vec();
         paths.sort();
@@ -547,7 +584,7 @@ mod tests {
     #[test]
     fn quick_open_finds_a_path_by_fuzzy_pieces() {
         let scratch = sample();
-        let index = PathIndex::build(&scratch.0);
+        let index = PathIndex::build(&scratch.0, &[]);
 
         let results = index.search("mainrs", 10);
         assert_eq!(results.first().map(String::as_str), Some("src/main.rs"));
@@ -562,7 +599,7 @@ mod tests {
     #[test]
     fn quick_open_ranks_the_closer_match_first() {
         let scratch = sample();
-        let index = PathIndex::build(&scratch.0);
+        let index = PathIndex::build(&scratch.0, &[]);
 
         let results = index.search("lib", 10);
         assert_eq!(
@@ -575,7 +612,7 @@ mod tests {
     #[test]
     fn an_empty_query_shows_something_rather_than_nothing() {
         let scratch = sample();
-        let index = PathIndex::build(&scratch.0);
+        let index = PathIndex::build(&scratch.0, &[]);
 
         let results = index.search("", 3);
         assert_eq!(
@@ -588,14 +625,14 @@ mod tests {
     #[test]
     fn a_query_matching_nothing_returns_nothing() {
         let scratch = sample();
-        let index = PathIndex::build(&scratch.0);
+        let index = PathIndex::build(&scratch.0, &[]);
         assert!(index.search("zzzznotathing", 10).is_empty());
     }
 
     #[test]
     fn results_resolve_back_to_openable_paths() {
         let scratch = sample();
-        let index = PathIndex::build(&scratch.0);
+        let index = PathIndex::build(&scratch.0, &[]);
 
         let result = &index.search("mainrs", 1)[0];
         let path = index.resolve(result);

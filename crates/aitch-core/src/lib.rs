@@ -10,6 +10,7 @@
 
 pub mod buffer;
 pub mod command;
+pub mod config;
 pub mod document;
 pub mod edit;
 pub mod editor;
@@ -23,12 +24,14 @@ pub mod project;
 pub mod project_search;
 pub mod prompt;
 pub mod search;
+pub mod session;
 pub mod syntax;
 pub mod watcher;
 pub mod workspace;
 
 pub use buffer::{Applied, Buffer, Position, TextEdit, Viewport};
 pub use command::Command;
+pub use config::{Config, ConfigError, ThemeChoice};
 pub use document::Document;
 pub use edit::Edit;
 pub use editor::{Editor, Outcome, ViewOptions};
@@ -46,6 +49,7 @@ pub use project::{PathIndex, Tree};
 pub use project_search::{Hit, Pattern, ProjectSearch};
 pub use prompt::{Answer, Histories, Prompt};
 pub use search::{Direction, Match, Query};
+pub use session::{OpenFile, Recovery, Session};
 pub use syntax::{Highlighter, Language, Span, Token};
 pub use watcher::Watcher;
 pub use workspace::Workspace;

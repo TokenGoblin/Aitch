@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use crate::buffer::{Applied, Buffer, Position, Viewport};
 use crate::command::Command;
+use crate::config::Config;
 use crate::document::Document;
 use crate::fileio;
 use crate::footer::{self, Footer};
@@ -24,6 +25,7 @@ use crate::project::{PathIndex, Tree};
 use crate::project_search::{self, Hit, Pattern, ProjectSearch};
 use crate::prompt::{self, Answer, Histories, Kind, Prompt};
 use crate::search::{self, Direction, Match, Query};
+use crate::session::{OpenFile, Recovery, Session};
 use crate::syntax::Language;
 use crate::workspace::Workspace;
 
@@ -112,6 +114,10 @@ pub struct Editor {
     found: Vec<Hit>,
     /// What the view shows beyond the text itself.
     view: ViewOptions,
+    /// The settings from `aitchrc.toml`.
+    config: Config,
+    /// Recovered text waiting on an answer.
+    pending_recovery: Option<String>,
     /// Wakes the event loop when a parse finishes. The core cannot know how,
     /// so the UI supplies it; without one, colour still arrives, just not
     /// until something else causes a redraw.
@@ -144,6 +150,8 @@ impl Editor {
             finder: None,
             found: Vec::new(),
             view: ViewOptions::default(),
+            config: Config::default(),
+            pending_recovery: None,
             wake: None,
             quitting: false,
         }
@@ -215,6 +223,147 @@ impl Editor {
     /// What the view is showing beyond the text.
     pub fn view(&self) -> ViewOptions {
         self.view
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    /// Take the settings, and apply the ones the core owns.
+    ///
+    /// The theme and the font belong to the UI, which reads them from here.
+    /// A keymap named in the config that cannot be loaded leaves the current
+    /// one in place: better the keys you had than no keys at all.
+    pub fn apply_config(&mut self, config: Config) {
+        self.view.line_numbers = config.line_numbers;
+        self.view.whitespace = config.whitespace;
+
+        if let Some(keymap) = load_keymap(&config.keymap) {
+            self.keymap = keymap;
+        } else {
+            self.say(format!("no keymap called {:?}", config.keymap));
+        }
+        self.config = config;
+    }
+
+    // -- what to remember ---------------------------------------------------
+
+    /// The session to write out: what is open, and where the cursor was.
+    pub fn session(&self) -> Session {
+        let files = self
+            .workspace
+            .documents()
+            .iter()
+            .filter_map(|document| {
+                let path = document.path()?.to_path_buf();
+                let cursor = document.buffer.cursor();
+                Some(OpenFile {
+                    path,
+                    line: cursor.line,
+                    column: cursor.column,
+                })
+            })
+            .collect();
+
+        Session {
+            root: self.workspace.root().map(Path::to_path_buf),
+            files,
+            active: self.workspace.active_index(),
+        }
+    }
+
+    /// Reopen what a previous run had open.
+    ///
+    /// A file that has since been deleted or renamed is skipped rather than
+    /// reported: a session is a convenience, and nagging about last week's
+    /// scratch file every time the editor starts is not one.
+    pub fn restore_session(&mut self, session: &Session) {
+        if let Some(root) = &session.root {
+            self.workspace.set_root(root.clone());
+        }
+        for file in &session.files {
+            if !file.path.exists() {
+                continue;
+            }
+            if self.workspace.open(&file.path).is_ok() {
+                let last = self.workspace.active().buffer.len_lines().saturating_sub(1);
+                self.workspace
+                    .active_mut()
+                    .buffer
+                    .set_cursor(Position::new(file.line.min(last), file.column));
+            }
+        }
+        self.workspace.activate(session.active);
+        self.follow_cursor();
+        self.start_highlighting();
+    }
+
+    /// Offer back any unsaved work from a run that did not end cleanly.
+    ///
+    /// Only for the buffer that is open: a recovery file for something else
+    /// is left alone rather than forced in front of someone who asked for
+    /// this file. It stays on disk until its own buffer is opened.
+    pub fn offer_recovery(&mut self) -> bool {
+        self.offer_recovery_from(Recovery::pending())
+    }
+
+    /// The same, over recovery files that have already been read.
+    ///
+    /// Split out so the decision can be tested without a state directory:
+    /// which candidate matches, and what happens when it matches exactly,
+    /// is the part worth pinning down.
+    pub fn offer_recovery_from(&mut self, candidates: Vec<Recovery>) -> bool {
+        let Some(path) = self.workspace.active().path().map(Path::to_path_buf) else {
+            return false;
+        };
+        let current = self.workspace.active().buffer.text().to_string();
+
+        let Some(recovery) = candidates
+            .into_iter()
+            .find(|candidate| candidate.path.as_deref() == Some(path.as_path()))
+        else {
+            return false;
+        };
+
+        // Identical to what is on disk: the crash cost nothing, so say
+        // nothing and clear it away.
+        if recovery.text == current {
+            Recovery::discard(Some(&path), self.workspace.active_index());
+            return false;
+        }
+
+        self.pending_recovery = Some(recovery.text.clone());
+        self.open_prompt(Kind::RestoreRecovery {
+            describes: recovery.describe(),
+        });
+        true
+    }
+
+    /// Whether anything is unsaved and so worth a recovery file.
+    pub fn needs_recovery(&self) -> bool {
+        self.workspace.any_dirty()
+    }
+
+    /// Write recovery files for every modified buffer.
+    ///
+    /// Called on a short delay after editing stops, not on every keystroke:
+    /// the point is to hold work that exists nowhere else, and a couple of
+    /// seconds of exposure is the price of not writing the file constantly.
+    pub fn write_recovery(&self) {
+        for (index, document) in self.workspace.documents().iter().enumerate() {
+            if document.is_dirty() {
+                Recovery::write(document.path(), index, &document.buffer.text().to_string());
+            }
+        }
+    }
+
+    /// Drop the recovery files for buffers that no longer need them.
+    pub fn discard_recovery(&self) {
+        for (index, document) in self.workspace.documents().iter().enumerate() {
+            if !document.is_dirty() {
+                Recovery::discard(document.path(), index);
+            }
+        }
     }
 
     /// The bracket under or just before the cursor, and its partner.
@@ -487,6 +636,18 @@ impl Editor {
     }
 
     fn run_in_editor(&mut self, command: &Command) -> Outcome {
+        // Tab is the config's business: a project that expands tabs to two
+        // spaces should get two spaces from the Tab key. Rewritten before the
+        // buffer sees it, because the buffer's own default is a tab character
+        // and it would otherwise answer first.
+        let expanded;
+        let command = if matches!(command, Command::InsertTab) {
+            expanded = Command::InsertText(self.config.tab_text());
+            &expanded
+        } else {
+            command
+        };
+
         match self
             .workspace
             .active_mut()
@@ -962,7 +1123,9 @@ impl Editor {
             }
 
             // Questions never reach here; they are answered a key at a time.
-            Kind::ReplaceConfirm { .. } | Kind::SaveBeforeQuit => Outcome::Redraw,
+            Kind::ReplaceConfirm { .. } | Kind::SaveBeforeQuit | Kind::RestoreRecovery { .. } => {
+                Outcome::Redraw
+            }
         }
     }
 
@@ -1015,6 +1178,32 @@ impl Editor {
                     Outcome::Redraw
                 }
             },
+
+            Kind::RestoreRecovery { .. } => {
+                let recovered = self.pending_recovery.take();
+                match (answer, recovered) {
+                    (Answer::Yes, Some(text)) => {
+                        // Put it in through the ordinary editing path, so it
+                        // is one undo step and the buffer knows it is dirty.
+                        self.workspace.active_mut().buffer.select_all();
+                        self.workspace
+                            .active_mut()
+                            .buffer
+                            .apply(&Command::InsertText(text), &self.viewport);
+                        self.workspace.active_mut().buffer.clear_selection();
+                        self.follow_cursor();
+                        self.start_highlighting();
+                        self.say("restored — save it to keep it");
+                    }
+                    _ => {
+                        // Discarded on purpose, so the file can go.
+                        let path = self.workspace.active().path().map(Path::to_path_buf);
+                        Recovery::discard(path.as_deref(), self.workspace.active_index());
+                        self.say("left as it was on disk");
+                    }
+                }
+                Outcome::Redraw
+            }
 
             Kind::OverwriteChanged => match answer {
                 Answer::Yes => self.write_out_now(),
@@ -1303,7 +1492,7 @@ impl Editor {
             self.say("no folder is open — start Aitch with a folder");
             return Outcome::Redraw;
         };
-        self.tree = Some(Tree::new(root));
+        self.tree = Some(Tree::new(root, &self.config.ignore));
         self.context = Context::Tree;
         Outcome::Redraw
     }
@@ -1317,7 +1506,7 @@ impl Editor {
         // Built once. The walk is the slow half and the matching is the fast
         // half, and only the fast half runs on a keystroke.
         if self.index.is_none() {
-            self.index = Some(PathIndex::build(&root));
+            self.index = Some(PathIndex::build(&root, &self.config.ignore));
         }
 
         let outcome = self.open_prompt(Kind::QuickOpen);
@@ -1362,11 +1551,16 @@ impl Editor {
         }
 
         let wake = self.wake.clone();
-        match ProjectSearch::start(&root, Pattern::new(pattern), move || {
-            if let Some(wake) = &wake {
-                wake();
-            }
-        }) {
+        match ProjectSearch::start(
+            &root,
+            Pattern::new(pattern),
+            &self.config.ignore,
+            move || {
+                if let Some(wake) = &wake {
+                    wake();
+                }
+            },
+        ) {
             Ok(search) => self.finder = Some(search),
             Err(e) => self.say(format!("{e}")),
         }
@@ -1578,6 +1772,17 @@ impl Editor {
             .buffer
             .follow_cursor(&mut self.viewport);
     }
+}
+
+/// Load a keymap by name, or from a file if the name is a path.
+fn load_keymap(name: &str) -> Option<Keymap> {
+    if let Some(keymap) = Keymap::by_name(name) {
+        return Some(keymap);
+    }
+    // Anything else is a path to a keymap file, which is how custom binds
+    // work: the format is the one the shipped profiles are written in.
+    let text = std::fs::read_to_string(name).ok()?;
+    Keymap::from_toml(&text).ok()
 }
 
 /// A bracket's partner, and which way to look for it.

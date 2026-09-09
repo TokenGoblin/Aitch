@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkMatch};
-use ignore::{WalkBuilder, WalkState};
+use ignore::WalkState;
 
 /// Stop after this many hits. A search that matches half a tree is a search
 /// that needs narrowing, and holding a million lines helps nobody.
@@ -124,7 +124,12 @@ pub struct ProjectSearch {
 
 impl ProjectSearch {
     /// Start searching `root`, calling `on_hits` when a batch is ready.
-    pub fn start<F>(root: &Path, pattern: Pattern, on_hits: F) -> Result<ProjectSearch, SearchError>
+    pub fn start<F>(
+        root: &Path,
+        pattern: Pattern,
+        ignores: &[String],
+        on_hits: F,
+    ) -> Result<ProjectSearch, SearchError>
     where
         // Sync as well as Send: the walker runs the callback from several
         // threads at once, one per file being searched.
@@ -144,13 +149,7 @@ impl ProjectSearch {
         let finished = Arc::new(AtomicBool::new(false));
         let found = Arc::new(AtomicUsize::new(0));
 
-        let walker = WalkBuilder::new(root)
-            .hidden(true)
-            .git_ignore(true)
-            .git_global(true)
-            .parents(true)
-            .require_git(false)
-            .build_parallel();
+        let walker = crate::project::walker(root, ignores).build_parallel();
 
         let root = root.to_path_buf();
         let thread_cancelled = cancelled.clone();
@@ -510,7 +509,7 @@ mod tests {
 
     /// Run a search to completion and return its hits.
     fn run(root: &Path, pattern: Pattern) -> Vec<Hit> {
-        let mut search = ProjectSearch::start(root, pattern, || {}).expect("a search");
+        let mut search = ProjectSearch::start(root, pattern, &[], || {}).expect("a search");
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(10) {
             search.poll();
@@ -581,7 +580,7 @@ mod tests {
     #[test]
     fn a_bad_regex_is_reported_rather_than_panicking() {
         let scratch = Scratch::new("bad");
-        let error = ProjectSearch::start(&scratch.0, Pattern::new("([").regex(true), || {});
+        let error = ProjectSearch::start(&scratch.0, Pattern::new("([").regex(true), &[], || {});
         assert!(error.is_err());
     }
 
@@ -614,7 +613,7 @@ mod tests {
         }
 
         let mut search =
-            ProjectSearch::start(&scratch.0, Pattern::new("needle"), || {}).expect("a search");
+            ProjectSearch::start(&scratch.0, Pattern::new("needle"), &[], || {}).expect("a search");
 
         let start = Instant::now();
         let mut saw_early = false;
@@ -649,7 +648,7 @@ mod tests {
         }
 
         let search =
-            ProjectSearch::start(&scratch.0, Pattern::new("needle"), || {}).expect("a search");
+            ProjectSearch::start(&scratch.0, Pattern::new("needle"), &[], || {}).expect("a search");
         search.cancel();
 
         let start = Instant::now();
@@ -665,7 +664,7 @@ mod tests {
         let woken = Arc::new(Counter::new(0));
         let counter = woken.clone();
 
-        let mut search = ProjectSearch::start(&scratch.0, Pattern::new("needle"), move || {
+        let mut search = ProjectSearch::start(&scratch.0, Pattern::new("needle"), &[], move || {
             counter.fetch_add(1, Ordering::SeqCst);
         })
         .expect("a search");

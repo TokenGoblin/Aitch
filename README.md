@@ -8,9 +8,9 @@ context-sensitive shortcuts, always visible, generated from the active keymap
 rather than hardcoded. Prompts happen on a line above the footer. No modal
 dialogs, no floating windows.
 
-**Status: Phase 6.** It looks and behaves like nano, opens folders, highlights
-thirteen languages, and searches a whole tree. Configuration is Phase 7,
-packaging Phase 8. See [`PLAN.md`](PLAN.md).
+**Status: Phase 7.** It looks and behaves like nano, opens folders, highlights
+thirteen languages, searches a whole tree, and reads a config file that
+applies as you save it. Packaging is Phase 8. See [`PLAN.md`](PLAN.md).
 
 ## Build and run
 
@@ -48,12 +48,36 @@ across the whole project, showing you the plan before it writes anything.
 Files keep the encoding and line endings they arrived with. Open a UTF-16 file
 with CRLF endings, change one word, save, and only that word differs.
 
+Starting with no file reopens what was open last time, at the cursor positions
+it had. Unsaved work survives a crash: it is offered back the next time that
+file is opened, and never deleted where it might be the only copy.
+
+## Configuring
+
+One optional TOML file — theme, keymap, tab width, line numbers, whitespace,
+extra ignore rules, font — that applies the moment you save it, no restart and
+no reload command. A broken config never stops the editor opening; the problem
+goes on the status line and everything falls back to its default.
+
+```toml
+theme = "dark"
+keymap = "nano"
+tab_width = 4
+expand_tabs = false
+ignore = ["target", "node_modules"]
+```
+
+`aitch --no-config` ignores it, `--config PATH` reads somewhere else, and
+`--no-session` starts empty. `aitch +42:8 notes.txt` opens at a position, and
+`git log | aitch` opens a pipe. The full set is in
+[`docs/config.md`](docs/config.md).
+
 ## Layout
 
 ```
 crates/
   aitch-core/     rope, edits, undo, search, syntax, keymap, footer, folder,
-                  session — no GUI dependencies
+                  config, session, recovery — no GUI dependencies
   aitch-ui/       winit + wgpu + cosmic-text
   aitch-harness/  headless driver: feed chords, assert on state
   aitch/          the binary: argument parsing and wiring

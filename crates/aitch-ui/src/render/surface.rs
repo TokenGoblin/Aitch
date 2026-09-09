@@ -35,8 +35,17 @@ pub struct Surface {
 }
 
 impl Surface {
-    /// Create a surface for `window` and configure it at its current size.
+    /// Create a surface for `window` with the default font.
     pub fn new(window: Arc<Window>) -> Result<Surface, SurfaceError> {
+        Surface::with_font(window, FONT_SIZE, None)
+    }
+
+    /// Create a surface, choosing the font from the config.
+    pub fn with_font(
+        window: Arc<Window>,
+        font_size: f32,
+        font_family: Option<String>,
+    ) -> Result<Surface, SurfaceError> {
         let size = window.inner_size();
         let scale_factor = window.scale_factor();
 
@@ -86,7 +95,7 @@ impl Surface {
 
         let atlas = Atlas::new(&device, &queue, ATLAS_SIZE);
         let pipeline = QuadPipeline::new(&device, format, atlas.bind_group_layout());
-        let text = TextRenderer::new(FONT_SIZE, scale_factor as f32);
+        let text = TextRenderer::with_family(font_size, scale_factor as f32, font_family);
 
         Ok(Surface {
             surface,

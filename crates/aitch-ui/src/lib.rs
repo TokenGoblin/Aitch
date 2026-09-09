@@ -9,5 +9,5 @@ pub mod input;
 pub mod render;
 pub mod theme;
 
-pub use app::run;
+pub use app::{run, Startup};
 pub use theme::Theme;
