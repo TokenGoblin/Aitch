@@ -32,6 +32,14 @@ struct Job {
     edits: Vec<TextEdit>,
     range: Range<usize>,
     generation: u64,
+    /// A different document from the last one: throw the tree away first.
+    ///
+    /// The worker keeps its tree between requests, which is the whole point of
+    /// an incremental parser. But a buffer switch between two files of the
+    /// same language keeps the same worker, and then the edits say nothing
+    /// changed — so tree-sitter reused the previous file's tree wholesale and
+    /// coloured the new file at the old file's offsets.
+    fresh: bool,
 }
 
 impl Job {
@@ -53,6 +61,9 @@ impl Job {
             edits,
             range: newer.range,
             generation: newer.generation,
+            // If either asked for a clean parse, the tree the older one was
+            // written against is gone regardless, so the merged job wants one.
+            fresh: self.fresh || newer.fresh,
         }
     }
 }
@@ -131,8 +142,14 @@ impl SyntaxThread {
                         }
                     }
 
-                    for edit in &job.edits {
-                        highlighter.edit(&input_edit(edit));
+                    // A different document: the tree describes the old one,
+                    // and the edits between them do not exist.
+                    if job.fresh {
+                        highlighter.forget();
+                    } else {
+                        for edit in &job.edits {
+                            highlighter.edit(&input_edit(edit));
+                        }
                     }
                     highlighter.parse(&job.text);
 
@@ -171,13 +188,16 @@ impl SyntaxThread {
     /// Ask for the visible range of a snapshot to be highlighted.
     ///
     /// Cheap: a rope clone shares its structure, so this copies no text.
-    pub fn request(&mut self, text: &Rope, edits: Vec<TextEdit>, range: Range<usize>) {
+    /// Ask for colour. `fresh` means this is a different document from the
+    /// last request, so nothing the parser is holding applies to it.
+    pub fn request(&mut self, text: &Rope, edits: Vec<TextEdit>, range: Range<usize>, fresh: bool) {
         self.generation += 1;
         let job = Job {
             text: text.clone(),
             edits,
             range,
             generation: self.generation,
+            fresh,
         };
         // A dead worker means no colour, which is survivable and already how
         // an unknown language behaves.
@@ -247,7 +267,7 @@ mod tests {
         let mut thread = SyntaxThread::new(Language::Rust, || {}).expect("a worker");
         let text = Rope::from_str("fn main() { let x = 1; }\n");
 
-        thread.request(&text, Vec::new(), 0..text.len_bytes());
+        thread.request(&text, Vec::new(), 0..text.len_bytes(), true);
         assert!(settle(&mut thread), "the worker never answered");
 
         let highlights = thread.highlights();
@@ -265,7 +285,7 @@ mod tests {
         .expect("a worker");
 
         let text = Rope::from_str("fn main() {}\n");
-        thread.request(&text, Vec::new(), 0..text.len_bytes());
+        thread.request(&text, Vec::new(), 0..text.len_bytes(), true);
         assert!(settle(&mut thread));
         assert!(woken.load(Ordering::SeqCst) > 0, "the loop was never woken");
     }
@@ -279,7 +299,7 @@ mod tests {
         for i in 0..50 {
             source.push_str(&format!("    let x{i} = {i};\n"));
             let text = Rope::from_str(&format!("{source}}}\n"));
-            thread.request(&text, Vec::new(), 0..text.len_bytes());
+            thread.request(&text, Vec::new(), 0..text.len_bytes(), true);
         }
 
         assert!(settle(&mut thread), "the worker never caught up");
@@ -296,10 +316,12 @@ mod tests {
         // silently drifts from the text.
         let mut buffer = Buffer::from_str("fn main() { let x = 1; }\n");
         let mut incremental = SyntaxThread::new(Language::Rust, || {}).expect("a worker");
+        // A document this worker has not seen, so nothing to reuse.
         incremental.request(
             &buffer.text().clone(),
             Vec::new(),
             0..buffer.text().len_bytes(),
+            true,
         );
         assert!(settle(&mut incremental));
 
@@ -309,11 +331,13 @@ mod tests {
         assert!(!edits.is_empty(), "the buffer reported no change");
 
         let text = buffer.text().clone();
-        incremental.request(&text, edits, 0..text.len_bytes());
+        // Not fresh: the same document, edited. Reusing the tree here is
+        // exactly what this test exists to check.
+        incremental.request(&text, edits, 0..text.len_bytes(), false);
         assert!(settle(&mut incremental));
 
         let mut fresh = SyntaxThread::new(Language::Rust, || {}).expect("a worker");
-        fresh.request(&text, Vec::new(), 0..text.len_bytes());
+        fresh.request(&text, Vec::new(), 0..text.len_bytes(), true);
         assert!(settle(&mut fresh));
 
         assert_eq!(
@@ -328,7 +352,7 @@ mod tests {
         let mut thread = SyntaxThread::new(Language::Rust, || {}).expect("a worker");
         let source = "// note\nfn main() {}\n";
         let text = Rope::from_str(source);
-        thread.request(&text, Vec::new(), 0..text.len_bytes());
+        thread.request(&text, Vec::new(), 0..text.len_bytes(), true);
         assert!(settle(&mut thread));
 
         let highlights = thread.highlights();
@@ -346,12 +370,14 @@ mod tests {
             edits: vec![edit_at(0), edit_at(1)],
             range: 0..2,
             generation: 1,
+            fresh: false,
         };
         let newer = Job {
             text: Rope::from_str("abcd"),
             edits: vec![edit_at(2), edit_at(3)],
             range: 0..4,
             generation: 2,
+            fresh: false,
         };
 
         let merged = older.superseded_by(newer);
@@ -360,6 +386,32 @@ mod tests {
         assert_eq!(merged.range, 0..4);
         let starts: Vec<usize> = merged.edits.iter().map(|e| e.start_byte).collect();
         assert_eq!(starts, vec![0, 1, 2, 3], "in order, and none lost");
+        assert!(!merged.fresh, "neither asked for a clean parse");
+    }
+
+    #[test]
+    fn coalescing_keeps_a_request_for_a_clean_parse() {
+        // A buffer switch asks for the tree to be thrown away. If that is
+        // merged with a later keystroke's job and lost, the new document is
+        // parsed against the old document's tree -- which is the bug the flag
+        // exists to stop, reappearing only when typing is fast enough to
+        // coalesce.
+        let switched = Job {
+            text: Rope::from_str("ab"),
+            edits: Vec::new(),
+            range: 0..2,
+            generation: 1,
+            fresh: true,
+        };
+        let typed = Job {
+            text: Rope::from_str("abc"),
+            edits: vec![edit_at(2)],
+            range: 0..3,
+            generation: 2,
+            fresh: false,
+        };
+
+        assert!(switched.superseded_by(typed).fresh, "the reset survives");
     }
 
     /// A one-character insertion at `byte`, which is all these tests need.
@@ -385,6 +437,7 @@ mod tests {
             &buffer.text().clone(),
             Vec::new(),
             0..buffer.text().len_bytes(),
+            true,
         );
         assert!(settle(&mut thread));
 
@@ -397,7 +450,7 @@ mod tests {
             }
             let text = buffer.text().clone();
             let edits = buffer.take_text_edits();
-            thread.request(&text, edits, 0..text.len_bytes());
+            thread.request(&text, edits, 0..text.len_bytes(), false);
         }
 
         assert!(settle(&mut thread), "the worker never caught up");

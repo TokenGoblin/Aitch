@@ -441,8 +441,14 @@ impl Editor {
 
         // Under the cursor first, then just behind it, which is where it
         // feels like the bracket is after typing one.
-        let at = [cursor, cursor.checked_sub(1)?]
-            .into_iter()
+        //
+        // Chained rather than an array, because building the array evaluates
+        // `checked_sub` eagerly: with the cursor at the start of the file its
+        // `?` returned from the whole function before the character actually
+        // under the cursor was ever looked at, so a file beginning with `{`
+        // never matched.
+        let at = std::iter::once(cursor)
+            .chain(cursor.checked_sub(1))
             .find(|index| *index < text.len_chars() && bracket_of(text.char(*index)).is_some())?;
 
         let (partner, forward) = bracket_of(text.char(at))?;
@@ -529,13 +535,16 @@ impl Editor {
                     }
                 });
             }
+            // Same language, so the worker and its grammar are reused -- but
+            // it is still holding the previous document's tree, and that must
+            // not be reused. `request_highlights` below says so.
             Some(_) => {}
             None => self.syntax = None,
         }
 
         // Whatever happened, the parser has seen none of this buffer.
         self.workspace.active_mut().buffer.take_text_edits();
-        self.request_highlights(true);
+        self.request_highlights_for_a_new_document();
     }
 
     /// The list above the prompt line: quick-open hits, or open buffers.
@@ -642,7 +651,22 @@ impl Editor {
     ///
     /// A margin either side means scrolling a little does not run past the
     /// coloured region before the next parse lands.
+    /// Ask for colour for a document the parser has not seen before.
+    ///
+    /// The worker survives a switch between two files of the same language,
+    /// and it keeps its tree between requests — so without this, tree-sitter
+    /// was handed a different document with no edits to explain the
+    /// difference, and reused the previous file's tree at offsets that meant
+    /// nothing in the new one.
+    fn request_highlights_for_a_new_document(&mut self) {
+        self.request_highlights_inner(true, true);
+    }
+
     fn request_highlights(&mut self, whole_buffer: bool) {
+        self.request_highlights_inner(whole_buffer, false);
+    }
+
+    fn request_highlights_inner(&mut self, whole_buffer: bool, fresh: bool) {
         if self.syntax.is_none() {
             // Nothing to parse, but the buffer's pending edits must not pile
             // up unbounded waiting for a parser that will never read them.
@@ -673,7 +697,7 @@ impl Editor {
         let edits = self.workspace.active_mut().buffer.take_text_edits();
         let text = self.workspace.active().buffer.text().clone();
         if let Some(syntax) = self.syntax.as_mut() {
-            syntax.request(&text, edits, range);
+            syntax.request(&text, edits, range, fresh);
         }
     }
 

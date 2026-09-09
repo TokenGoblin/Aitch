@@ -106,7 +106,22 @@ pub fn run(startup: Startup) -> Result<(), Box<dyn Error>> {
     // Anything left behind by a run that did not end cleanly.
     editor.offer_recovery();
 
-    let root = editor.workspace().root().map(std::path::Path::to_path_buf);
+    // Only a folder that was actually opened is watched. `aitch notes.txt`
+    // also sets a root, so that the tree and quick open have somewhere to
+    // look, but watching a folder means watching it recursively — and that
+    // root is the file's parent, which for a file in a home directory is the
+    // whole home directory. Every download and every browser cache write
+    // would then wake the loop, rebuild the tree and throw away the quick-open
+    // index, against the zero-idle-CPU budget in PLAN.md §6.
+    //
+    // Nothing about safety rests on this. A file changed underneath a buffer
+    // is caught by `Document::changed_on_disk`, which looks at the file
+    // itself; the watcher only saves the sidebar from needing `^L`.
+    let root = editor
+        .workspace()
+        .root_was_opened()
+        .then(|| editor.workspace().root().map(std::path::Path::to_path_buf))
+        .flatten();
     let mut app = App::new(editor);
     app.config_path = config_path;
     app.config_complaint = config_error.as_ref().map(ToString::to_string);
@@ -175,6 +190,8 @@ struct App {
     config_complaint: Option<String>,
     /// Watches that file. Held so dropping the app stops it.
     config_watcher: Option<Watcher>,
+    /// Whether the glyph atlas filling up has already been reported.
+    said_atlas_full: bool,
 
     /// Distance from the top of the document in physical pixels.
     ///
@@ -207,6 +224,7 @@ impl App {
             config_path: None,
             config_complaint: None,
             config_watcher: None,
+            said_atlas_full: false,
             scroll: 0.0,
             modifiers: ModifiersState::empty(),
             pointer: PhysicalPosition::new(0.0, 0.0),
@@ -359,7 +377,16 @@ impl App {
         // needs a new one rather than a redraw.
         let font_changed = config.font != self.font;
         self.font = config.font.clone();
+
+        // Unlike the font, this one can change without a new surface: the
+        // gutter and the Tab key already read it from the config, and without
+        // this the tabs already on screen kept the old width while everything
+        // else moved.
+        let tab_width = config.tab_width;
         let complaint = self.editor.apply_config(config);
+        if let Some(surface) = self.surface.as_mut() {
+            surface.set_tab_width(tab_width);
+        }
 
         match (error, complaint) {
             // Whatever went wrong is more use than "reloaded". Saying the
@@ -643,8 +670,23 @@ impl ApplicationHandler<Wake> for App {
                     return;
                 };
                 let result = surface.render(&self.editor, offset, generation, &theme);
+                let atlas_full = surface.atlas_is_full();
                 if let Err(e) = result {
                     self.fail(event_loop, e.to_string());
+                    return;
+                }
+
+                // Past this point a glyph that will not fit is simply not
+                // drawn, and stays undrawn -- characters vanish from the text
+                // with nothing said. Said once: it is a standing condition,
+                // not an event, and repeating it every frame would bury the
+                // status line.
+                if atlas_full && !self.said_atlas_full {
+                    self.said_atlas_full = true;
+                    self.editor.say(
+                        "too many different characters on screen to draw them all;                          a smaller font or fewer scripts will fix it",
+                    );
+                    self.redraw();
                 }
             }
 

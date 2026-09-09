@@ -299,6 +299,15 @@ impl Highlighter {
     ///
     /// Without this the parse still succeeds — it just does all the work
     /// again, which is the difference between typing being free and not.
+    /// Throw the tree away, so the next parse starts from nothing.
+    ///
+    /// For when the next text is a different document rather than a later
+    /// version of this one: reusing the tree then colours the new file at the
+    /// old file's offsets.
+    pub fn forget(&mut self) {
+        self.tree = None;
+    }
+
     pub fn edit(&mut self, edit: &InputEdit) {
         if let Some(tree) = self.tree.as_mut() {
             tree.edit(edit);

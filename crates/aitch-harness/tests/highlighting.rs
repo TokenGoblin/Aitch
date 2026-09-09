@@ -156,6 +156,28 @@ fn a_bracket_finds_its_partner() {
 }
 
 #[test]
+fn a_bracket_at_the_very_start_of_the_file_still_matches() {
+    // The candidates were built as an array, `[cursor, cursor - 1]`, which
+    // evaluates both before looking at either: with the cursor at offset 0
+    // the subtraction returned from the whole function, so a file beginning
+    // with a bracket never matched.
+    let (_scratch, mut h) = open(
+        "main.rs",
+        "{ \"a\": 1 }
+",
+    );
+    assert!(settle(&mut h));
+
+    move_to(&mut h, 0);
+    let (open, close) = h
+        .editor()
+        .bracket_pair()
+        .expect("the brace under the cursor at offset 0");
+    assert_eq!(open, 0);
+    assert_eq!(close, 9);
+}
+
+#[test]
 fn nesting_is_counted_rather_than_taking_the_first_bracket_found() {
     let (_scratch, mut h) = open("main.rs", "fn f() { g(h(1)); }\n");
     assert!(settle(&mut h));
@@ -243,4 +265,56 @@ fn the_toggles_are_bound_in_both_profiles() {
         h.feed("M-P").unwrap();
         assert!(h.editor().view().whitespace, "{profile} does not bind M-P");
     }
+}
+
+#[test]
+fn switching_files_colours_the_new_one_and_not_the_old_one() {
+    // The worker is kept when the next file is the same language, and it
+    // keeps its parse tree between requests. Nothing then told it the text
+    // was a different document rather than a later version of the same one,
+    // so tree-sitter reused the old file's tree and coloured the new file at
+    // the old file's offsets.
+    let scratch = Scratch::new();
+    // Deliberately different shapes: a keyword where the other has a comment.
+    let first = scratch.file("first.rs", "// a comment that runs on and on\nfn a() {}\n");
+    let second = scratch.file("second.rs", "fn second_function() {}\n// trailing\n");
+
+    let mut harness = Harness::nano().with_document(Document::open(&first).unwrap());
+    harness.editor_mut().set_wake(|| {});
+    assert!(settle(&mut harness), "the first file never coloured");
+    assert_eq!(
+        token_at(&harness, 0),
+        Some(Token::Comment),
+        "first.rs starts with a comment"
+    );
+
+    // Open the second and switch to it the way a person would, with M-. --
+    // which is the path that keeps the worker and its tree.
+    harness.editor_mut().workspace_mut().open(&second).unwrap();
+    harness.editor_mut().workspace_mut().activate(0);
+    harness.feed("M-.").unwrap();
+    assert_eq!(
+        harness.editor().document().display_name(),
+        "second.rs",
+        "M-. should have moved to the other buffer"
+    );
+    // Not `settle`: it returns as soon as there are any spans, and the first
+    // file's are still there. Wait for an answer that actually arrives after
+    // the switch.
+    let start = Instant::now();
+    let mut answered = false;
+    while start.elapsed() < Duration::from_secs(5) {
+        if harness.editor_mut().poll_highlights() {
+            answered = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(answered, "no colour arrived for the second file");
+
+    assert_eq!(
+        token_at(&harness, 0),
+        Some(Token::Keyword),
+        "second.rs starts with `fn`, whatever the previous file started with"
+    );
 }

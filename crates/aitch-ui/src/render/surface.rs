@@ -153,6 +153,22 @@ impl Surface {
         screen::columns(&self.text, self.config.width as f32)
     }
 
+    /// Change how wide a tab is drawn, for a live config reload.
+    ///
+    /// True when it changed, so the caller knows the layout is stale.
+    pub fn set_tab_width(&mut self, tab_width: usize) -> bool {
+        self.text.set_tab_width(tab_width)
+    }
+
+    /// Whether a frame has asked for more glyphs than the atlas can hold.
+    ///
+    /// Past that point a glyph that will not fit is simply not drawn, and
+    /// stays undrawn, so the text quietly loses characters. Worth saying out
+    /// loud rather than leaving someone to wonder where their text went.
+    pub fn atlas_is_full(&self) -> bool {
+        self.atlas.overflowed()
+    }
+
     /// React to a DPI change: re-derive the metrics and drop every cached
     /// glyph, since all of them were rasterized for the old scale.
     pub fn set_scale_factor(&mut self, scale_factor: f64) {
@@ -227,6 +243,12 @@ impl Surface {
                 self.surface.configure(&self.device, &self.config);
                 return Ok(());
             }
+            // The compositor was busy and did not hand a frame over in time.
+            // Nothing is wrong: the next redraw asks again. Treating this as
+            // fatal closed the editor over a stall of a few milliseconds --
+            // no work lost, since the recovery files survive it, but the
+            // window vanished mid-session with nothing said.
+            Err(wgpu::SurfaceError::Timeout) => return Ok(()),
             Err(e) => return Err(SurfaceError(format!("could not acquire a frame: {e}"))),
         };
 

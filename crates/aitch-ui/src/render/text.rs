@@ -62,6 +62,9 @@ pub struct TextRenderer {
     width: f32,
     /// The configured font family, if one was asked for.
     family: Option<String>,
+    /// How wide a tab is drawn, in cells. Kept so a live config change can
+    /// move it; both layout buffers are told separately.
+    tab_width: u16,
     shaped: Option<ShapeKey>,
 }
 
@@ -110,11 +113,31 @@ impl TextRenderer {
             first_line: 0,
             width: 0.0,
             family,
+            tab_width,
             shaped: None,
         }
     }
 
     /// Physical height of one line of text.
+    /// Change how wide a tab is drawn.
+    ///
+    /// The gutter and the Tab key read the width from the config directly, so
+    /// without this a live change moved everything except the tabs already on
+    /// screen: the status line said "settings reloaded" and a tab-indented
+    /// file quietly stopped lining up.
+    ///
+    /// True when it actually changed, so the caller can invalidate its layout.
+    pub fn set_tab_width(&mut self, tab_width: usize) -> bool {
+        let tab_width = tab_width.clamp(1, 16) as u16;
+        if tab_width == self.tab_width {
+            return false;
+        }
+        self.tab_width = tab_width;
+        self.layout.set_tab_width(&mut self.font_system, tab_width);
+        self.chrome.set_tab_width(&mut self.font_system, tab_width);
+        true
+    }
+
     pub fn line_height(&self) -> f32 {
         metrics_for(self.font_size, self.scale_factor).line_height
     }

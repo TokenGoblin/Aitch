@@ -19,6 +19,14 @@ pub struct Workspace {
     documents: Vec<Document>,
     active: usize,
     root: Option<PathBuf>,
+    /// Whether the folder was asked for, or worked out from a file inside it.
+    ///
+    /// `aitch src/main.rs` sets a root so that the tree and quick open have
+    /// somewhere to look, but the person opened a file, not a project. The
+    /// difference matters because watching a folder means watching it
+    /// recursively: inferring a root from `~/notes.txt` and then watching it
+    /// puts a recursive watch on the whole home directory.
+    root_opened: bool,
 }
 
 impl Workspace {
@@ -28,6 +36,7 @@ impl Workspace {
             documents: vec![document],
             active: 0,
             root: None,
+            root_opened: false,
         }
     }
 
@@ -37,6 +46,7 @@ impl Workspace {
             documents: vec![Document::blank()],
             active: 0,
             root: Some(root),
+            root_opened: true,
         }
     }
 
@@ -44,8 +54,23 @@ impl Workspace {
         self.root.as_deref()
     }
 
+    /// Give the workspace a folder that was worked out rather than asked for.
+    ///
+    /// See [`Workspace::root_was_opened`]: this is the weaker of the two, and
+    /// nothing that costs anything per-file should be started on the strength
+    /// of it.
     pub fn set_root(&mut self, root: PathBuf) {
         self.root = Some(root);
+        self.root_opened = false;
+    }
+
+    /// Whether the folder was opened deliberately, as `aitch .` does.
+    ///
+    /// False when it was inferred from a file's parent, which is most of the
+    /// time: `aitch notes.txt` in a home directory would otherwise start a
+    /// recursive watch over everything in it.
+    pub fn root_was_opened(&self) -> bool {
+        self.root_opened
     }
 
     pub fn active(&self) -> &Document {
@@ -199,6 +224,30 @@ fn is_scratch(document: &Document) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_folder_that_was_opened_is_told_apart_from_one_that_was_inferred() {
+        // Watching a folder means watching it recursively, so `aitch
+        // ~/notes.txt` -- which sets a root of the home directory purely so
+        // the tree has somewhere to look -- must not be mistaken for `aitch ~`.
+        let opened = Workspace::with_root(PathBuf::from("/projects/thing"));
+        assert!(opened.root_was_opened());
+
+        let mut inferred = Workspace::new(named("notes.txt"));
+        inferred.set_root(PathBuf::from("/home/someone"));
+        assert!(inferred.root().is_some(), "the tree still has a root");
+        assert!(
+            !inferred.root_was_opened(),
+            "but nothing expensive should start on the strength of it"
+        );
+    }
+
+    #[test]
+    fn a_workspace_with_no_folder_has_nothing_to_watch() {
+        let alone = Workspace::new(named("notes.txt"));
+        assert!(alone.root().is_none());
+        assert!(!alone.root_was_opened());
+    }
     use crate::Buffer;
 
     fn named(name: &str) -> Document {
