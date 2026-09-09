@@ -42,7 +42,11 @@ function Invoke-Native {
 }
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$outputDir = Join-Path $root 'target\wix'
+# Everything meant to be shipped lands here: the zip, the installer, and the
+# RTF licence the installer UI needs on the way. Named for what it holds
+# rather than for the tool that fills it, since the zip predates WiX running
+# and does not need it at all.
+$outputDir = Join-Path $root 'target\dist'
 $binary = Join-Path $root 'target\release\aitch.exe'
 
 if (-not $Version) {
@@ -121,14 +125,46 @@ $rtf = '{\rtf1\ansi\deff0{\fonttbl{\f0\fnil\fcharset0 Segoe UI;}}' + "`n" +
        '\fs18' + "`n" + $escaped + "`n" + '}'
 Set-Content -Path $licenseRtf -Value $rtf -Encoding ascii
 
-# The docs that ship beside the binary are named in aitch.wxs, relative to
-# the repository root. A missing one is a build failure rather than a silent
-# omission; crates/aitch-harness/tests/documentation.rs checks the same list.
-foreach ($doc in @('README.md', 'LICENSE', 'docs\guide.md', 'docs\config.md', 'docs\keymap.md')) {
+# The docs that ship beside the binary, as they are named in aitch.wxs: source
+# path relative to the repository root, then the name it lands under. Both the
+# installer and the portable zip flatten them next to the executable, so the
+# two carry the same files under the same names. A missing one is a build
+# failure rather than a silent omission;
+# crates/aitch-harness/tests/documentation.rs checks the same list.
+$docs = [ordered] @{
+    'README.md'      = 'README.md'
+    'LICENSE'        = 'LICENSE'
+    'docs\guide.md'  = 'guide.md'
+    'docs\config.md' = 'config.md'
+    'docs\keymap.md' = 'keymap.md'
+}
+foreach ($doc in $docs.Keys) {
     if (-not (Test-Path (Join-Path $root $doc))) {
         throw "aitch.wxs ships $doc, which is not there"
     }
 }
+
+# The portable zip: the same binary and the same documents, with nothing to
+# install and nothing written outside the folder it is unpacked into. It is
+# built before the installer because it needs no toolchain beyond PowerShell,
+# so a machine without WiX can still produce something people can run.
+$stageName = "aitch-$Version-x86_64-windows"
+$stage = Join-Path $outputDir $stageName
+if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+New-Item -ItemType Directory -Force -Path $stage | Out-Null
+Copy-Item $binary (Join-Path $stage 'aitch.exe')
+foreach ($doc in $docs.Keys) {
+    Copy-Item (Join-Path $root $doc) (Join-Path $stage $docs[$doc])
+}
+
+# Everything sits under one folder inside the archive, so unpacking it in a
+# downloads directory does not scatter six files across it.
+$zip = Join-Path $outputDir "$stageName.zip"
+if (Test-Path $zip) { Remove-Item -Force $zip }
+Compress-Archive -Path $stage -DestinationPath $zip -CompressionLevel Optimal
+Remove-Item -Recurse -Force $stage
+$zipSize = [math]::Round((Get-Item $zip).Length / 1MB, 1)
+Write-Host "Built $zip ($zipSize MB)"
 
 # The installer UI comes from an extension package, which is not part of the
 # wix tool itself. Adding one that is already there is a no-op, and this beats

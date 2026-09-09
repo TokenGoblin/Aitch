@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Packaging
+
+- **A portable Windows zip**, the second half of what PLAN.md Phase 8 asks of
+  Windows. Same binary and same documents as the installer, with nothing to
+  install: unpack it and run `aitch.exe`. It is built before WiX is invoked
+  and needs nothing but PowerShell, so a machine without the WiX toolset can
+  still produce something people can run. It is not portable in the sense of
+  keeping its state beside itself — settings, sessions and recovery files live
+  under `%APPDATA%` and `%LOCALAPPDATA%` exactly as the installed copy's do,
+  and the release notes say so rather than implying otherwise.
+- The release workflow unpacks that zip somewhere else entirely and runs the
+  binary out of it, so what ships is known to start rather than merely known
+  to exist.
+- Both artifacts now land in `target/dist` rather than `target/wix`, which was
+  a confusing home for a zip that WiX has nothing to do with.
+
 ### Fixed
 
 - **Every project-search hit but the first was unreachable.** Pressing Down to

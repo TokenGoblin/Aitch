@@ -62,14 +62,33 @@ jobs:
 
       # build.ps1 remaps source paths out of the binary and refuses to package
       # one that still carries the build machine's home directory.
-      - name: Build the installer
+      - name: Build the installer and the portable zip
         shell: pwsh
         run: ./packaging/windows/build.ps1 -Version ${{ steps.version.outputs.version }}
+
+      # The zip is the artifact with nothing between it and the user, so it is
+      # worth proving it actually runs rather than merely that it exists. This
+      # unpacks it somewhere else entirely and runs the binary from there.
+      - name: Check the portable zip runs
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $zip = "target/dist/aitch-$version-x86_64-windows.zip"
+          if (-not (Test-Path $zip)) { throw "no zip at $zip" }
+
+          $unpacked = Join-Path $env:RUNNER_TEMP 'portable'
+          Expand-Archive -Path $zip -DestinationPath $unpacked
+          $exe = Join-Path $unpacked "aitch-$version-x86_64-windows/aitch.exe"
+          $reported = & $exe --version
+          if ($reported -ne "aitch $version") {
+            throw "the zip's binary reports '$reported', not 'aitch $version'"
+          }
+          Write-Host "Portable zip runs and reports $reported"
 
       - name: Check the installer opens
         shell: pwsh
         run: |
-          $msi = "target/wix/aitch-${{ steps.version.outputs.version }}-x86_64.msi"
+          $msi = "target/dist/aitch-${{ steps.version.outputs.version }}-x86_64.msi"
           if (-not (Test-Path $msi)) { throw "no installer at $msi" }
 
           # A readable Property table is the cheapest proof the file is a real
@@ -91,21 +110,31 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: aitch-${{ steps.version.outputs.version }}-windows-x86_64-msi
-          path: target/wix/*.msi
+          name: aitch-${{ steps.version.outputs.version }}-windows-x86_64
+          path: |
+            target/dist/*.msi
+            target/dist/*.zip
           if-no-files-found: error
 
       - name: Publish the release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          files: target/wix/*.msi
+          files: |
+            target/dist/*.msi
+            target/dist/*.zip
           generate_release_notes: true
           body: |
-            Windows installer for Aitch ${{ steps.version.outputs.version }}.
+            Windows build of Aitch ${{ steps.version.outputs.version }}.
 
-            Installs per-user into `%LOCALAPPDATA%\Programs\Aitch` — no
-            administrator prompt — and puts `aitch` on your PATH.
+            **`.msi`** installs per-user into `%LOCALAPPDATA%\Programs\Aitch` —
+            no administrator prompt — and puts `aitch` on your PATH.
+
+            **`.zip`** is the same binary with nothing to install: unpack it
+            and run `aitch.exe`. It is not on your PATH and there is no Start
+            menu entry, and it still keeps its settings in `%APPDATA%\aitch`
+            and its sessions and recovery files in `%LOCALAPPDATA%\aitch`, the
+            same as the installed copy.
 
             New to it? [docs/guide.md](https://github.com/TokenGoblin/Aitch/blob/main/docs/guide.md)
             is the guide.

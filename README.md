@@ -36,6 +36,11 @@ need in the order you need it.
 it. It installs per-user into `%LOCALAPPDATA%\Programs\Aitch`, so there is no
 administrator prompt, and puts `aitch` on your PATH.
 
+There is a `.zip` beside it with the same binary and nothing to install —
+unpack it and run `aitch.exe`. It is not on your PATH and has no Start menu
+entry; settings, sessions and recovery files still live under `%APPDATA%` and
+`%LOCALAPPDATA%` exactly as the installed copy's do.
+
 **Anywhere else,** and to build it yourself — needs a stable Rust toolchain,
 1.85 or newer:
 
