@@ -37,6 +37,18 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             pkg-config libx11-dev libxkbcommon-dev libwayland-dev
 
+      # lavapipe, Mesa's software Vulkan device. Without it the runner has no
+      # adapter at all and every rendering test skips. Recommends are left in
+      # here: the driver is no use without the loader that finds it.
+      - name: Install a software GPU
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers vulkan-tools
+          echo "--- Vulkan ICDs on this runner ---"
+          ls -la /usr/share/vulkan/icd.d/ || echo "no ICD directory"
+          echo "--- what the loader sees ---"
+          vulkaninfo --summary 2>&1 | head -40 || echo "vulkaninfo failed"
+
       - name: Format
         run: cargo fmt --all --check
 
