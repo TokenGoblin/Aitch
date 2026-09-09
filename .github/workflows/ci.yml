@@ -47,8 +47,22 @@ jobs:
           echo "--- Vulkan ICDs on this runner ---"
           ls -la /usr/share/vulkan/icd.d/ || echo "no ICD directory"
           echo "--- devices the loader enumerates ---"
-          vulkaninfo --summary 2>&1 | sed -n '/Devices:/,$p' | head -25 \
-            || echo "vulkaninfo failed"
+          # Captured rather than piped: the exit status of a pipeline is the
+          # last command's, so a `|| echo` on the end could never fire. And
+          # filtering to the Devices section prints nothing when there is no
+          # such section — which is precisely the failure worth diagnosing.
+          if summary=$(vulkaninfo --summary 2>&1); then
+            devices=$(printf '%s\n' "$summary" | sed -n '/Devices:/,$p')
+            if [ -n "$devices" ]; then
+              printf '%s\n' "$devices" | head -25
+            else
+              echo "no Devices section — vulkaninfo said:"
+              printf '%s\n' "$summary" | head -40
+            fi
+          else
+            echo "vulkaninfo failed:"
+            printf '%s\n' "$summary" | head -40
+          fi
 
       - name: Format
         run: cargo fmt --all --check

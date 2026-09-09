@@ -26,30 +26,81 @@ struct Gpu {
     queue: wgpu::Queue,
 }
 
-/// `None` when the machine has no usable GPU adapter at all.
+/// Why there is no GPU to test against.
+///
+/// The two cases want different advice, so they are kept apart: telling
+/// someone to install a driver that is already installed and enumerating
+/// sends them a long way in the wrong direction.
+enum NoGpu {
+    NoAdapter(String),
+    NoDevice(String),
+}
+
+impl std::fmt::Display for NoGpu {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NoGpu::NoAdapter(why) => write!(
+                f,
+                "no GPU adapter: {why}. On Linux this usually means the loader \
+                 found no Vulkan ICD — install mesa-vulkan-drivers for lavapipe, \
+                 and do not set VK_ICD_FILENAMES unless the path really exists, \
+                 because it replaces the driver list rather than adding to it"
+            ),
+            NoGpu::NoDevice(why) => write!(
+                f,
+                "an adapter was found but no device could be opened: {why}. The \
+                 driver is present and enumerating; it did not meet \
+                 Limits::downlevel_defaults() or could not allocate"
+            ),
+        }
+    }
+}
+
+/// Whether a missing GPU should fail rather than skip.
+///
+/// The value is read, not merely its presence: `AITCH_REQUIRE_GPU=0` is what
+/// someone reproducing a CI failure locally will reach for to get the skip
+/// behaviour back, and it should work.
+fn gpu_is_required() -> bool {
+    required_from(std::env::var("AITCH_REQUIRE_GPU").ok().as_deref())
+}
+
+/// The decision, separated from where the value comes from, so it can be
+/// tested without writing to the process environment — these tests run in
+/// parallel, and a test that unset the variable could make a rendering test
+/// skip silently, which is the failure this whole guard exists to prevent.
+fn required_from(value: Option<&str>) -> bool {
+    match value {
+        Some(value) => !matches!(value.trim(), "" | "0" | "false" | "no"),
+        None => false,
+    }
+}
+
+/// `None` when the machine has no usable GPU, after saying why.
 ///
 /// Panics instead when `AITCH_REQUIRE_GPU` is set, so CI cannot pass by
 /// skipping every rendering test.
 fn gpu() -> Option<Gpu> {
     match adapter_and_device() {
-        Some(gpu) => Some(gpu),
-        None if std::env::var_os("AITCH_REQUIRE_GPU").is_some() => {
-            panic!(
-                "no GPU adapter, and AITCH_REQUIRE_GPU is set. On a Linux                  runner this means the software rasterizer (lavapipe, from                  mesa-vulkan-drivers) is missing or was not picked up."
-            )
+        Ok(gpu) => Some(gpu),
+        Err(why) if gpu_is_required() => {
+            panic!("{why}, and AITCH_REQUIRE_GPU is set")
         }
-        None => None,
+        Err(why) => {
+            eprintln!("SKIPPED: {why}");
+            None
+        }
     }
 }
 
-fn adapter_and_device() -> Option<Gpu> {
+fn adapter_and_device() -> Result<Gpu, NoGpu> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::LowPower,
         force_fallback_adapter: false,
         compatible_surface: None,
     }))
-    .ok()?;
+    .map_err(|e| NoGpu::NoAdapter(e.to_string()))?;
 
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("aitch test device"),
@@ -58,9 +109,9 @@ fn adapter_and_device() -> Option<Gpu> {
         memory_hints: wgpu::MemoryHints::default(),
         trace: wgpu::Trace::Off,
     }))
-    .ok()?;
+    .map_err(|e| NoGpu::NoDevice(e.to_string()))?;
 
-    Some(Gpu { device, queue })
+    Ok(Gpu { device, queue })
 }
 
 /// Draw `buffer` offscreen and return the frame as RGBA rows.
@@ -184,10 +235,7 @@ fn lit_pixels(pixels: &[u8]) -> (usize, Vec<usize>) {
 
 #[test]
 fn text_actually_reaches_the_framebuffer() {
-    let Some(gpu) = gpu() else {
-        eprintln!("SKIPPED: no GPU adapter on this machine");
-        return;
-    };
+    let Some(gpu) = gpu() else { return };
 
     let theme = Theme::dark();
     let buffer = Buffer::from_str("hello world\nsecond line\nthird line\n");
@@ -210,10 +258,7 @@ fn text_actually_reaches_the_framebuffer() {
 
 #[test]
 fn an_empty_buffer_draws_only_the_cursor() {
-    let Some(gpu) = gpu() else {
-        eprintln!("SKIPPED: no GPU adapter on this machine");
-        return;
-    };
+    let Some(gpu) = gpu() else { return };
 
     let theme = Theme::dark();
     let buffer = Buffer::new();
@@ -233,10 +278,7 @@ fn an_empty_buffer_draws_only_the_cursor() {
 
 #[test]
 fn the_cursor_moves_with_the_buffer() {
-    let Some(gpu) = gpu() else {
-        eprintln!("SKIPPED: no GPU adapter on this machine");
-        return;
-    };
+    let Some(gpu) = gpu() else { return };
 
     let theme = Theme::dark();
     let mut buffer = Buffer::from_str("\n\n\n\n");
@@ -253,10 +295,7 @@ fn the_cursor_moves_with_the_buffer() {
 
 #[test]
 fn a_selection_is_drawn_behind_the_text() {
-    let Some(gpu) = gpu() else {
-        eprintln!("SKIPPED: no GPU adapter on this machine");
-        return;
-    };
+    let Some(gpu) = gpu() else { return };
 
     let theme = Theme::dark();
     let text = "hello world\nsecond line\n";
@@ -301,10 +340,7 @@ fn lit_span(pixels: &[u8], y: usize) -> Option<(usize, usize)> {
 
 #[test]
 fn the_first_selected_line_highlights_from_its_start() {
-    let Some(gpu) = gpu() else {
-        eprintln!("SKIPPED: no GPU adapter on this machine");
-        return;
-    };
+    let Some(gpu) = gpu() else { return };
 
     let theme = Theme::dark();
     let mut buffer = Buffer::from_str("aaaaaaaa\nbbbbbbbb\ncccccccc\n");
@@ -326,4 +362,44 @@ fn the_first_selected_line_highlights_from_its_start() {
         "the first selected line starts at x={first}, so its highlight is missing"
     );
     assert!(last > 40, "the highlight should cover the whole line");
+}
+
+#[test]
+fn the_no_gpu_messages_read_as_sentences() {
+    // A `\` continuation in a Rust string strips the newline and the leading
+    // whitespace after it; forgetting one bakes the source indentation into
+    // the message. This caught exactly that, in the one message a maintainer
+    // sees when CI hard-fails.
+    for message in [
+        NoGpu::NoAdapter("adapter request failed".to_string()),
+        NoGpu::NoDevice("device request failed".to_string()),
+    ] {
+        let text = message.to_string();
+        assert!(
+            !text.contains("  "),
+            "run of spaces in a diagnostic message: {text:?}"
+        );
+        assert!(!text.contains('\n'), "message should be one line: {text:?}");
+        // And it must carry the underlying cause, not just advice.
+        assert!(text.contains("failed"), "cause was dropped: {text:?}");
+    }
+}
+
+#[test]
+fn the_gpu_requirement_reads_its_value() {
+    // Someone reproducing a CI failure locally reaches for =0 to get the skip
+    // back. Checking presence alone would ignore them.
+    for (value, expected) in [
+        (None, false),
+        (Some("1"), true),
+        (Some("true"), true),
+        (Some("yes"), true),
+        (Some("0"), false),
+        (Some("false"), false),
+        (Some("no"), false),
+        (Some(""), false),
+        (Some("  "), false),
+    ] {
+        assert_eq!(required_from(value), expected, "for {value:?}");
+    }
 }
