@@ -79,7 +79,17 @@ jobs:
           $unpacked = Join-Path $env:RUNNER_TEMP 'portable'
           Expand-Archive -Path $zip -DestinationPath $unpacked
           $exe = Join-Path $unpacked "aitch-$version-x86_64-windows/aitch.exe"
-          $reported = & $exe --version
+
+          # Start-Process -Wait, not `& $exe`: aitch is a GUI-subsystem
+          # program, and a shell does not wait for one of those. `&` returned
+          # immediately, closed the pipe it was reading, and the editor was
+          # still on its way to writing the version into it.
+          $out = Join-Path $env:RUNNER_TEMP 'version.txt'
+          $run = Start-Process $exe -ArgumentList '--version' -Wait -PassThru `
+                                    -NoNewWindow -RedirectStandardOutput $out
+          if ($run.ExitCode -ne 0) { throw "--version exited $($run.ExitCode)" }
+
+          $reported = (Get-Content $out -Raw).Trim()
           if ($reported -ne "aitch $version") {
             throw "the zip's binary reports '$reported', not 'aitch $version'"
           }

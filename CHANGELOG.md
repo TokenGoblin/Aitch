@@ -33,6 +33,15 @@ with a console beside it.
   executable and checks the command line still answers, because both of these
   have been wrong in a shipped release and neither shows up in a unit test.
 
+- **`aitch --version` could die with a panic instead of printing.** A
+  GUI-subsystem program is not waited for by the shell that started it, so the
+  pipe it was writing into can be closed before it writes — and `println!`
+  panics when the write fails, so the process exited 101 with a panic message
+  rather than a version. Printing now says nothing when there is nowhere to
+  print to, which is the only sensible answer: if the output went nowhere, it
+  went nowhere. Found by the release workflow's own check on the portable zip,
+  which is exactly what that check is for.
+
 - **A restored session stopped the folder being watched.** Only a folder that
   was opened is watched, and restoring a session set the root as though it had
   merely been inferred — so `aitch .` watched the tree on its first run and

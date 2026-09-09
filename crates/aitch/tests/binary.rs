@@ -76,3 +76,32 @@ fn the_command_line_still_answers() {
         "it should say what it did not understand"
     );
 }
+
+/// Printing must not be able to take the process down.
+///
+/// `println!` panics when the write fails, and for a GUI-subsystem program
+/// that is routine rather than exotic: a shell does not wait for one, so it
+/// closes the pipe it was reading and the program is still on its way to
+/// writing into it. `aitch --version` exited 101 with a panic instead of
+/// printing a version, which is how it reached a release workflow.
+#[test]
+fn output_survives_somewhere_that_stopped_listening() {
+    use std::process::Stdio;
+
+    let mut child = Command::new(AITCH)
+        .arg("--help")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn --help");
+
+    // Close the read end before it has written, which is what a shell that
+    // does not wait does to it.
+    drop(child.stdout.take());
+
+    let status = child.wait().expect("wait for --help");
+    assert!(
+        status.success(),
+        "--help exited {status:?} with nobody reading its output"
+    );
+}

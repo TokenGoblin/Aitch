@@ -62,8 +62,8 @@ fn main() -> ExitCode {
         // --help and --version have already printed.
         Ok(None) => return ExitCode::SUCCESS,
         Err(message) => {
-            eprintln!("aitch: {message}");
-            eprintln!("Try `aitch --help`.");
+            complain(&format!("aitch: {message}"));
+            complain("Try `aitch --help`.");
             return ExitCode::FAILURE;
         }
     };
@@ -105,7 +105,7 @@ fn main() -> ExitCode {
     let workspace = match build_workspace(&arguments, piped) {
         Ok(workspace) => workspace,
         Err(message) => {
-            eprintln!("aitch: {message}");
+            complain(&format!("aitch: {message}"));
             return ExitCode::FAILURE;
         }
     };
@@ -128,7 +128,7 @@ fn main() -> ExitCode {
     };
 
     if let Err(e) = aitch_ui::run(startup) {
-        eprintln!("aitch: {e}");
+        complain(&format!("aitch: {e}"));
         aitch_core::log_failure(&e.to_string());
         return ExitCode::FAILURE;
     }
@@ -143,11 +143,14 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Option<Arguments>, String
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "-h" | "--help" => {
-                print!("{USAGE}");
+                tell(USAGE);
                 return Ok(None);
             }
             "-V" | "--version" => {
-                println!("aitch {VERSION}");
+                tell(&format!(
+                    "aitch {VERSION}
+"
+                ));
                 return Ok(None);
             }
             "--no-config" => parsed.no_config = true,
@@ -289,6 +292,35 @@ fn record_panics() {
     // `aitch --help` and `aitch --version` from then on. The log is for
     // whoever goes looking after something went wrong, and the thing that
     // went wrong is what names it.
+}
+
+/// Print to stdout, and say nothing if there is nowhere to print to.
+///
+/// `println!` panics when the write fails, and for a GUI-subsystem program
+/// that is not a remote possibility: a shell does not wait for one, so it can
+/// close the pipe it was reading before the program gets round to writing.
+/// `aitch --version` then died with a panic and exit code 101 instead of
+/// printing a version — which is what it did to the release workflow.
+///
+/// Nothing here is worth taking the process down for. If the output went
+/// nowhere, it went nowhere.
+fn tell(text: &str) {
+    use std::io::Write;
+    let mut out = std::io::stdout();
+    let _ = out.write_all(text.as_bytes());
+    let _ = out.flush();
+}
+
+/// The same, for stderr.
+fn complain(text: &str) {
+    use std::io::Write;
+    let mut err = std::io::stderr();
+    let _ = err.write_all(text.as_bytes());
+    let _ = err.write_all(
+        b"
+",
+    );
+    let _ = err.flush();
 }
 
 /// Borrow the console of whatever started us, if it had one.
