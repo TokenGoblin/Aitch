@@ -35,6 +35,17 @@ Windows installer.
 - A README section listing what the editor does *not* do yet, rather than
   leaving it to be discovered.
 
+### Fixed
+
+- **The guard against a corrupting edit now exists in release builds.** All
+  buffer mutation goes through `edit.rs`, which checks that an edit removes
+  the text it claims to; that check was a `debug_assert`, so the binary
+  people actually run would have applied a mismatched edit and corrupted the
+  buffer without a word. It is a real assertion now, comparing chars rather
+  than building a `String` so it does not allocate — the keystroke benchmark
+  is unchanged at 1.35 µs. Found by running the suite in release profile,
+  which the release workflow now does before it packages anything.
+
 ### Known limitations
 
 - Cold start is about 400 ms against a 150 ms budget, nearly all of it GPU

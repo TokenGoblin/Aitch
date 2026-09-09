@@ -102,19 +102,26 @@ impl fmt::Display for Edit {
 
 /// Apply an edit to a rope.
 ///
-/// In debug builds this checks that `removed` is really what is there. A
-/// mismatch means the caller built the edit against a different version of the
-/// text, and applying it anyway would corrupt the buffer silently — which is
-/// exactly the class of bug undo makes hard to trace back.
+/// Checks that `removed` is really what is there, in every build. A mismatch
+/// means the caller built the edit against a different version of the text,
+/// and applying it anyway would corrupt the buffer silently — exactly the
+/// class of bug undo makes hard to trace back, and the build where it matters
+/// most is the one people actually run.
+///
+/// It costs a comparison over the removed text, which is the same order as
+/// removing it, and nothing at all for the ordinary case of typing a
+/// character. Comparing chars rather than building a `String` keeps it from
+/// allocating.
 pub fn apply(rope: &mut Rope, edit: &Edit) {
-    debug_assert!(
+    assert!(
         edit.removed_end() <= rope.len_chars(),
         "edit {edit} runs past the end of a {} char buffer",
         rope.len_chars()
     );
-    debug_assert_eq!(
-        rope.slice(edit.at..edit.removed_end()).to_string(),
-        edit.removed,
+    assert!(
+        rope.slice(edit.at..edit.removed_end())
+            .chars()
+            .eq(edit.removed.chars()),
         "edit {edit} does not match the text it claims to remove"
     );
 
@@ -215,5 +222,44 @@ mod tests {
     fn removing_the_wrong_text_is_caught() {
         let mut r = rope("hello world");
         apply(&mut r, &Edit::delete(0, "goodbye"));
+    }
+
+    #[test]
+    #[should_panic(expected = "runs past the end")]
+    fn an_edit_past_the_end_is_caught() {
+        let mut r = rope("short");
+        apply(&mut r, &Edit::delete(3, "much longer than the rope"));
+    }
+
+    #[test]
+    fn the_guard_is_in_release_builds_too() {
+        // It was a debug_assert, which meant the shipped binary would apply a
+        // mismatched edit and corrupt the buffer without a word. The
+        // should_panic tests above only prove anything if the assertion is
+        // compiled in, and in a release build it would not have been.
+        let caught = std::panic::catch_unwind(|| {
+            let mut r = rope("hello world");
+            apply(&mut r, &Edit::delete(0, "goodbye"));
+        });
+        assert!(
+            caught.is_err(),
+            "a mismatched edit must be refused in every profile"
+        );
+    }
+
+    #[test]
+    fn a_matching_edit_is_applied_without_complaint() {
+        let mut r = rope("hello world");
+        apply(&mut r, &Edit::replace(6, "world", "there"));
+        assert_eq!(r.to_string(), "hello there");
+    }
+
+    #[test]
+    fn the_check_understands_characters_not_bytes() {
+        // A rope indexes by char. Comparing the slice byte by byte would
+        // reject a perfectly good edit over any text that is not ASCII.
+        let mut r = rope("héllo wörld");
+        apply(&mut r, &Edit::delete(0, "héllo "));
+        assert_eq!(r.to_string(), "wörld");
     }
 }
