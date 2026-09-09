@@ -1,5 +1,16 @@
 //! The `aitch` binary: argument parsing and wiring, and nothing else.
 
+// A GUI program, so that launching it from the Start menu or Explorer opens a
+// window and not a window plus an empty console. Windows decides that from the
+// subsystem in the executable header and nothing else: as a console program it
+// gets a console whether or not it wants one, which is what shipped in 0.1.0
+// and 0.1.1.
+//
+// The cost is that a GUI program starts with no console at all, even when it
+// was run from a terminal -- so `attach_to_parent_console` below puts that
+// back, because `aitch --help` has to print.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -43,6 +54,7 @@ struct Arguments {
 }
 
 fn main() -> ExitCode {
+    attach_to_parent_console();
     record_panics();
 
     let arguments = match parse(std::env::args().skip(1)) {
@@ -279,6 +291,106 @@ fn record_panics() {
         }
     }
 }
+
+/// Borrow the console of whatever started us, if it had one.
+///
+/// A GUI-subsystem program is given no console, which is the point -- being
+/// given one unasked is why a shortcut used to open two windows. But this is
+/// also a command-line program: `--help` and `--version` print, a bad argument
+/// explains itself, and `git log | aitch` reads a pipe. Run from a terminal,
+/// all of that has to land in that terminal.
+///
+/// `cmd` and PowerShell both hand a GUI child their own standard handles, so
+/// in practice attaching is enough and the loop below changes nothing. It is
+/// there for the launchers that do not: attaching makes the console reachable,
+/// but a process holding no handle to it still writes into a void, and the
+/// symptom of that would be `aitch --help` printing nothing at all.
+///
+/// A handle that is already valid is never touched, so a pipe or a redirect --
+/// `git log | aitch`, `aitch --help > notes.txt` -- keeps pointing where the
+/// shell pointed it.
+///
+/// Called before anything writes, so Rust settles on the right handles.
+///
+/// One consequence is worth knowing: `cmd` does not wait for a GUI program, so
+/// `aitch --version` returns the prompt and prints a moment later. That is the
+/// price of not opening a console nobody asked for.
+#[cfg(windows)]
+fn attach_to_parent_console() {
+    use std::ffi::c_void;
+
+    // Hand-rolled rather than a dependency for four calls.
+    const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
+    const STD_INPUT_HANDLE: u32 = 0xFFFF_FFF6;
+    const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5;
+    const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF4;
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const OPEN_EXISTING: u32 = 3;
+
+    extern "system" {
+        fn AttachConsole(process: u32) -> i32;
+        fn GetStdHandle(which: u32) -> *mut c_void;
+        fn SetStdHandle(which: u32, handle: *mut c_void) -> i32;
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            security: *mut c_void,
+            disposition: u32,
+            flags: u32,
+            template: *mut c_void,
+        ) -> *mut c_void;
+    }
+
+    let invalid = usize::MAX as *mut c_void;
+
+    // Failure means the parent had no console: an Explorer double-click, and
+    // nothing to do about it. The startup log is the fallback there.
+    if unsafe { AttachConsole(ATTACH_PARENT_PROCESS) } == 0 {
+        return;
+    }
+
+    // "CONOUT$" and "CONIN$" name the attached console's own ends.
+    let wide = |name: &str| name.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let conout = wide("CONOUT$");
+    let conin = wide("CONIN$");
+
+    for (which, name) in [
+        (STD_OUTPUT_HANDLE, &conout),
+        (STD_ERROR_HANDLE, &conout),
+        (STD_INPUT_HANDLE, &conin),
+    ] {
+        // Already pointing somewhere real -- a pipe or a redirect -- so leave
+        // it exactly as the shell set it up.
+        let existing = unsafe { GetStdHandle(which) };
+        if !existing.is_null() && existing != invalid {
+            continue;
+        }
+
+        let opened = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if !opened.is_null() && opened != invalid {
+            unsafe {
+                SetStdHandle(which, opened);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_to_parent_console() {}
 
 #[cfg(test)]
 mod tests {

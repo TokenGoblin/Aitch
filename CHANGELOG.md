@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **Launching it opened two windows.** The editor, and an empty console beside
+  it. Windows decides that from the subsystem in the executable header and
+  nothing else, and `aitch` was built as a console program — so anything that
+  was not already a terminal, a Start menu shortcut most of all, got a console
+  it never asked for. It is a GUI program now.
+
+  That is only half of it, because this is also a command-line program:
+  `--help` and `--version` print, a bad argument explains itself, `git log |
+  aitch` reads a pipe. A GUI program is given no console at all, so it now
+  attaches to the console of whatever started it, and standard handles that
+  point nowhere are reopened onto it — though measuring showed `cmd` and
+  PowerShell both hand a GUI child their own handles, so that fallback rarely
+  fires.
+
+  One consequence is worth knowing: `cmd` does not wait for a GUI program, so
+  `aitch --version` gives the prompt back and prints a moment later. That is
+  the price of not opening a console nobody asked for.
+
+  `crates/aitch/tests/binary.rs` now reads the subsystem out of the built
+  executable and checks the command line still answers, because both of these
+  have been wrong in a shipped release and neither shows up in a unit test.
+
 ## [0.1.1] — 2026-09-09
 
 Three ways to lose work or the window, and a way to find out why next time.
