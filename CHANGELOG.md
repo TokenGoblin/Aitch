@@ -60,6 +60,16 @@ Acceptance:
 - A Latin-1 file that gains a character Latin-1 cannot hold refuses to save
   and leaves the original intact, rather than writing a `?` over the data.
 
+Testing:
+
+- The offscreen render tests had been skipping on Linux since Phase 1. A test
+  that skips for want of a GPU still reports "ok", and libtest hides the
+  message saying why; the only visible sign was that all five finished in
+  0.01s on Ubuntu against 3.53s on Windows. CI now installs lavapipe and sets
+  `AITCH_REQUIRE_GPU`, which turns a missing adapter into a failure, so the
+  render path cannot quietly lose a platform again. Both runners now enumerate
+  a device and run the tests for real.
+
 Not done:
 
 - The exit prompt has nowhere to live: the prompt line is Phase 3. Quitting a
