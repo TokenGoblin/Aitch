@@ -36,7 +36,11 @@ pub enum Kind {
         done: usize,
     },
     /// Save before quitting?
-    SaveBeforeQuit,
+    ///
+    /// `others` is how many *further* buffers are unsaved behind this one, so
+    /// the question can say that answering "No" throws away more than what is
+    /// on screen.
+    SaveBeforeQuit { others: usize },
     /// Fuzzy path search across the folder, with results above the line.
     QuickOpen,
     /// The open buffers, to pick one.
@@ -64,7 +68,7 @@ impl Kind {
         matches!(
             self,
             Kind::ReplaceConfirm { .. }
-                | Kind::SaveBeforeQuit
+                | Kind::SaveBeforeQuit { .. }
                 | Kind::OverwriteChanged
                 | Kind::ProjectReplaceConfirm { .. }
                 | Kind::RestoreRecovery { .. }
@@ -124,7 +128,10 @@ impl Kind {
                 files, occurrences, ..
             } => format!("Replace {occurrences} occurrences in {files} files?"),
             Kind::ReplaceConfirm { .. } => "Replace this instance?".to_string(),
-            Kind::SaveBeforeQuit => "Save modified buffer?".to_string(),
+            Kind::SaveBeforeQuit { others: 0 } => "Save modified buffer?".to_string(),
+            Kind::SaveBeforeQuit { others } => {
+                format!("Save modified buffer? ({others} more unsaved)")
+            }
             Kind::QuickOpen => "Open file".to_string(),
             Kind::BufferList => "Switch to buffer".to_string(),
             Kind::OverwriteChanged => {
@@ -595,7 +602,7 @@ mod tests {
 
     #[test]
     fn questions_are_told_apart_from_text_prompts() {
-        assert!(Kind::SaveBeforeQuit.is_question());
+        assert!(Kind::SaveBeforeQuit { others: 0 }.is_question());
         assert!(Kind::ReplaceConfirm {
             find: "a".into(),
             replace: "b".into(),

@@ -337,9 +337,18 @@ impl Editor {
             // A named buffer takes the recovery for its own file and no
             // other. Somebody who asked for this file should not be handed
             // work from a different one.
-            Some(path) => candidates
-                .into_iter()
-                .find(|candidate| candidate.path.as_deref() == Some(path.as_path())),
+            Some(path) => {
+                // By what the path resolves to, not by how it was spelled:
+                // a recovery is written with the file's resolved path, and
+                // the buffer here may have been opened by a relative one.
+                let wanted = crate::session::recovery_identity(path);
+                candidates.into_iter().find(|candidate| {
+                    candidate
+                        .path
+                        .as_deref()
+                        .is_some_and(|p| crate::session::recovery_identity(p) == wanted)
+                })
+            }
 
             // An unnamed buffer takes an unnamed recovery, but only into an
             // empty one: text typed into `git log | aitch` exists nowhere
@@ -1203,9 +1212,9 @@ impl Editor {
             }
 
             // Questions never reach here; they are answered a key at a time.
-            Kind::ReplaceConfirm { .. } | Kind::SaveBeforeQuit | Kind::RestoreRecovery { .. } => {
-                Outcome::Redraw
-            }
+            Kind::ReplaceConfirm { .. }
+            | Kind::SaveBeforeQuit { .. }
+            | Kind::RestoreRecovery { .. } => Outcome::Redraw,
         }
     }
 
@@ -1217,15 +1226,16 @@ impl Editor {
         self.context = Context::Editor;
 
         match prompt.kind {
-            Kind::SaveBeforeQuit => match answer {
+            Kind::SaveBeforeQuit { .. } => match answer {
                 Answer::Yes => {
                     let outcome = self.write_out();
-                    // Only leave if it actually got written.
+                    // Only leave if it actually got written -- and then start
+                    // the quit again rather than leaving, because the next
+                    // unsaved buffer deserves the same question.
                     if self.workspace.active().is_dirty() {
                         outcome
                     } else {
-                        self.quitting = true;
-                        Outcome::Quit
+                        self.begin_quit()
                     }
                 }
                 Answer::No => {
@@ -1313,11 +1323,23 @@ impl Editor {
     // -- the commands that do work ----------------------------------------
 
     fn begin_quit(&mut self) -> Outcome {
-        if !self.workspace.active().is_dirty() {
+        // Every buffer, not only the one on screen. Leaving deletes the
+        // recovery file of all of them (see `abandon_recovery`), so an unsaved
+        // buffer that happens not to be active would go without a question and
+        // without the copy that would have got it back.
+        let Some(index) = self.workspace.first_dirty() else {
             self.quitting = true;
             return Outcome::Quit;
+        };
+
+        // Bring it to the front, so "Save modified buffer?" is asked about a
+        // buffer whose name is on the status line and whose text is on screen.
+        if self.workspace.activate(index) {
+            self.follow_cursor();
+            self.start_highlighting();
         }
-        self.open_prompt(Kind::SaveBeforeQuit)
+        let others = self.workspace.dirty_count().saturating_sub(1);
+        self.open_prompt(Kind::SaveBeforeQuit { others })
     }
 
     fn write_out(&mut self) -> Outcome {

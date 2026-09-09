@@ -125,7 +125,10 @@ impl Recovery {
     /// rather than accumulating one copy per keystroke run.
     fn file_name(path: Option<&Path>, key: u64) -> String {
         match path {
-            Some(path) => format!("{:016x}.toml", stable_hash(&path.to_string_lossy())),
+            Some(path) => format!(
+                "{:016x}.toml",
+                stable_hash(&recovery_identity(path).to_string_lossy())
+            ),
             // An unnamed buffer has no path to key on, so it carries a token
             // unique to the run that made it. A position would do until the
             // next run opened its own scratch buffer at the same position and
@@ -141,7 +144,7 @@ impl Recovery {
         let file = directory.join(Recovery::file_name(path, key));
 
         let recovery = Recovery {
-            path: path.map(Path::to_path_buf),
+            path: path.map(recovery_identity),
             saved_at: timestamp(),
             text: text.to_string(),
             file: None,
@@ -185,7 +188,7 @@ impl Recovery {
         std::fs::create_dir_all(directory).expect("recovery directory");
         let file = directory.join(Recovery::file_name(path, key));
         let recovery = Recovery {
-            path: path.map(Path::to_path_buf),
+            path: path.map(recovery_identity),
             saved_at: timestamp(),
             text: text.to_string(),
             file: None,
@@ -304,6 +307,56 @@ fn format_utc(seconds: u64) -> String {
     )
 }
 
+/// The path a recovery file is keyed and matched on.
+///
+/// Not the path as it was written. `aitch notes.txt` run in two different
+/// folders stores the same relative path both times, so the two buffers keyed
+/// to one recovery file: the second run overwrote the first run's unsaved
+/// work, and then offered what was left back as the wrong file. And on
+/// Windows `C:\X\A.TXT` and `c:\x\a.txt` are one file that keyed to two,
+/// leaving behind a recovery nothing would ever clear away.
+///
+/// Resolved against the filesystem where that is possible and made absolute
+/// where it is not: a file that does not exist yet cannot be canonicalized,
+/// but its folder usually can, which is enough to tell two folders apart.
+pub fn recovery_identity(path: &Path) -> PathBuf {
+    let resolved = path
+        .canonicalize()
+        .or_else(|_| match (path.parent(), path.file_name()) {
+            (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
+                parent.canonicalize().map(|parent| parent.join(name))
+            }
+            _ => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+        })
+        .or_else(|_| std::path::absolute(path))
+        .unwrap_or_else(|_| path.to_path_buf());
+
+    if !cfg!(windows) {
+        return resolved;
+    }
+
+    // Two Windows-only adjustments, both so that the same file resolved by
+    // different routes above compares equal.
+    //
+    // `canonicalize` returns the extended-length form, `\\?\C:\...`, and the
+    // fallback for a file that does not exist yet returns a plain `C:\...`.
+    // Left alone, creating a file would change its recovery key and orphan
+    // whatever had already been written for it.
+    let text = resolved.to_string_lossy();
+    let plain = match text.strip_prefix(r"\\?\") {
+        // `\\?\UNC\server\share` is the verbatim spelling of `\\server\share`.
+        Some(rest) => match rest.strip_prefix("UNC\\") {
+            Some(unc) => format!(r"\\{unc}"),
+            None => rest.to_string(),
+        },
+        None => text.to_string(),
+    };
+
+    // And the filesystem is case-insensitive, so two spellings of one file
+    // must not key to two recovery files.
+    PathBuf::from(plain.to_lowercase())
+}
+
 /// FNV-1a. Not for security — only for turning a path into a stable filename.
 fn stable_hash(text: &str) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -312,6 +365,73 @@ fn stable_hash(text: &str) -> u64 {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
+}
+
+#[cfg(test)]
+mod recovery_identity_tests {
+    use super::*;
+
+    #[test]
+    fn the_key_does_not_depend_on_how_the_path_was_written() {
+        // `aitch notes.txt` and `aitch /full/path/notes.txt` are the same
+        // file and must own the same recovery file.
+        let directory = std::env::current_dir().expect("a working directory");
+        let relative = Path::new("Cargo.toml");
+        let absolute = directory.join("Cargo.toml");
+
+        assert_eq!(
+            Recovery::file_name(Some(relative), 0),
+            Recovery::file_name(Some(&absolute), 0),
+        );
+    }
+
+    #[test]
+    fn the_same_name_in_two_folders_keys_to_two_recoveries() {
+        // The data loss this exists to stop: two projects, each with a
+        // notes.txt, both opened as `aitch notes.txt`. They hashed the same
+        // relative string, so the second run overwrote the first run's
+        // unsaved work and then offered it back as the wrong file.
+        let a = Path::new("project-a").join("notes.txt");
+        let b = Path::new("project-b").join("notes.txt");
+
+        assert_ne!(
+            Recovery::file_name(Some(&a), 0),
+            Recovery::file_name(Some(&b), 0),
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn two_spellings_of_one_windows_path_key_to_one_recovery() {
+        // Case-insensitive filesystem: these are one file, and two recovery
+        // files for it means one of them is never cleared away.
+        let upper = Path::new(r"C:\Projects\NOTES.TXT");
+        let lower = Path::new(r"c:\projects\notes.txt");
+
+        assert_eq!(
+            Recovery::file_name(Some(upper), 0),
+            Recovery::file_name(Some(lower), 0),
+        );
+    }
+
+    #[test]
+    fn a_file_that_does_not_exist_yet_still_gets_a_folder_specific_key() {
+        // Opening a name that is not on disk is ordinary -- it is how you
+        // start a new file -- and it must not collapse to the bare name.
+        let directory = std::env::current_dir().expect("a working directory");
+        let here = directory.join("not-created-yet.txt");
+        let elsewhere = directory.join("sub").join("not-created-yet.txt");
+
+        assert_ne!(
+            Recovery::file_name(Some(&here), 0),
+            Recovery::file_name(Some(&elsewhere), 0),
+        );
+        assert_eq!(
+            Recovery::file_name(Some(Path::new("not-created-yet.txt")), 0),
+            Recovery::file_name(Some(&here), 0),
+            "and it still matches the same file named the short way"
+        );
+    }
 }
 
 #[cfg(test)]

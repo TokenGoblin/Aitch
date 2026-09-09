@@ -693,6 +693,94 @@ fn an_unnamed_recovery_never_lands_on_top_of_something() {
 }
 
 #[test]
+fn quitting_asks_about_a_buffer_that_is_not_the_active_one() {
+    // ^X checked only the buffer in front of you, and then quit deleted the
+    // recovery files of every buffer -- so editing one file, switching to
+    // another, and leaving threw the edits away without a question and took
+    // the copy that would have got them back.
+    let scratch = Scratch::new("quit-other-dirty");
+    let edited = scratch.file(
+        "edited.txt",
+        "before
+",
+    );
+    let clean = scratch.file(
+        "clean.txt",
+        "untouched
+",
+    );
+
+    let mut harness = Harness::nano().with_document(Document::open(&edited).unwrap());
+    harness.type_text("changed");
+    harness.editor_mut().workspace_mut().open(&clean).unwrap();
+
+    assert!(
+        !harness.editor().workspace().active().is_dirty(),
+        "the buffer in front of us is the clean one"
+    );
+    assert!(
+        harness.editor().workspace().any_dirty(),
+        "but something still needs saving"
+    );
+
+    harness.feed("^X").unwrap();
+    assert!(
+        !harness.should_quit(),
+        "quit without asking, and the unsaved buffer went with it"
+    );
+    let line = harness.prompt_line().unwrap_or_default();
+    assert!(
+        line.starts_with("Save modified buffer?"),
+        "it should ask, the way it does for the active buffer: {line:?}"
+    );
+    assert_eq!(
+        harness.editor().document().display_name(),
+        "edited.txt",
+        "and about the buffer it means, brought to the front to be looked at"
+    );
+}
+
+#[test]
+fn saying_yes_walks_every_unsaved_buffer_before_leaving() {
+    // Two unsaved buffers, one ^X: answering the question should save this
+    // one and then ask about the next, not save one and leave with the other.
+    let scratch = Scratch::new("quit-save-all");
+    let first = scratch.file(
+        "first.txt",
+        "one
+",
+    );
+    let second = scratch.file(
+        "second.txt",
+        "two
+",
+    );
+
+    let mut harness = Harness::nano().with_document(Document::open(&first).unwrap());
+    harness.type_text("A");
+    harness.editor_mut().workspace_mut().open(&second).unwrap();
+    harness.type_text("B");
+    assert_eq!(harness.editor().workspace().dirty_count(), 2);
+
+    harness.feed("^X").unwrap();
+    assert!(harness
+        .prompt_line()
+        .unwrap_or_default()
+        .contains("1 more unsaved"));
+
+    harness.type_text("y");
+    assert!(!harness.should_quit(), "one saved, one still to answer for");
+    assert_eq!(harness.editor().workspace().dirty_count(), 1);
+
+    harness.type_text("y");
+    assert!(harness.should_quit(), "both answered for, now it may leave");
+    assert_eq!(harness.editor().workspace().dirty_count(), 0);
+
+    assert!(std::fs::read_to_string(&first).unwrap().contains('A'));
+    assert!(std::fs::read_to_string(&second).unwrap().contains('B'));
+}
+
+#[test]
 fn a_deliberate_quit_takes_the_recovery_files_with_it() {
     // Answering "no" to save-before-quit is a decision to throw the edits
     // away. Being offered them back tomorrow would undo that decision.

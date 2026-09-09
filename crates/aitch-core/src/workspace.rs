@@ -164,6 +164,19 @@ impl Workspace {
         self.documents.iter().any(Document::is_dirty)
     }
 
+    /// The first buffer with unsaved changes, if there is one.
+    ///
+    /// Quitting asks about them one at a time, starting here, so the question
+    /// is always about a buffer that can be brought to the front and looked at.
+    pub fn first_dirty(&self) -> Option<usize> {
+        self.documents.iter().position(Document::is_dirty)
+    }
+
+    /// How many buffers have unsaved changes.
+    pub fn dirty_count(&self) -> usize {
+        self.documents.iter().filter(|d| d.is_dirty()).count()
+    }
+
     /// The buffer list as it reads on the prompt line: `1 notes.txt*`.
     pub fn listing(&self) -> Vec<String> {
         self.documents
