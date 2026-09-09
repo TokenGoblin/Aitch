@@ -1,6 +1,6 @@
-# Project Plan — A Graphical nano
+# Project Plan — Aitch, a graphical nano
 
-**Working name:** `nib` (placeholder — `pith`, `quill`, `slate` also free-ish)
+**Name:** Aitch (binary: `aitch`)
 **Target platforms:** Windows 10+, Linux (X11 + Wayland). macOS possible later, not a phase-1 constraint.
 **Language:** Rust
 **Built with:** Claude Code, phase by phase
@@ -39,7 +39,7 @@ Explicitly *not* goals: extensions/plugins, LSP, debugger, integrated terminal, 
 | Fuzzy matching | `nucleo` | Helix's matcher. Fast enough for 200k paths. |
 | Project search | `grep-searcher` + `grep-regex` | Ripgrep internals, not shelling out to `rg`. |
 | Syntax highlighting | `tree-sitter` | Incremental. Deferred to Phase 5 — do not pull it in early. |
-| Config | `toml` + `serde` | A `nibrc.toml`, nanorc in spirit. |
+| Config | `toml` + `serde` | A `aitchrc.toml`, nanorc in spirit. |
 
 ### The one alternative worth naming
 
@@ -51,12 +51,12 @@ The Rust route is the recommendation here because it matches where the browser p
 
 ## 3. Architecture
 
-Hard rule: **the editor core must be a separate crate with zero GUI dependencies.** Everything Claude Code can test without a window goes in `nib-core`. This is what makes agentic development actually work — the agent can verify its own changes by running tests instead of asking you to look at a screenshot.
+Hard rule: **the editor core must be a separate crate with zero GUI dependencies.** Everything Claude Code can test without a window goes in `aitch-core`. This is what makes agentic development actually work — the agent can verify its own changes by running tests instead of asking you to look at a screenshot.
 
 ```
-nib/
+Aitch/
 ├─ crates/
-│  ├─ nib-core/        # no winit, no wgpu, no cosmic-text
+│  ├─ aitch-core/        # no winit, no wgpu, no cosmic-text
 │  │   ├─ buffer.rs        # rope, cursors, selections, line endings, encoding
 │  │   ├─ edit.rs          # edit primitives; every mutation goes through here
 │  │   ├─ history.rs       # undo/redo, edit coalescing
@@ -66,12 +66,12 @@ nib/
 │  │   ├─ workspace.rs     # open folder, buffer set, active buffer
 │  │   ├─ project.rs       # file tree model, ignore rules, watcher events
 │  │   └─ fileio.rs        # load/save, encoding detect, atomic write
-│  ├─ nib-ui/          # winit + wgpu + cosmic-text
+│  ├─ aitch-ui/          # winit + wgpu + cosmic-text
 │  │   ├─ app.rs           # event loop; translates input -> Command
 │  │   ├─ render/          # text surface, footer, prompt line, sidebar
 │  │   └─ theme.rs
-│  └─ nib-harness/     # headless driver: feed keystrokes, assert buffer state
-└─ nib/               # thin binary: arg parsing, wiring
+│  └─ aitch-harness/     # headless driver: feed keystrokes, assert buffer state
+└─ aitch/               # thin binary: arg parsing, wiring
 ```
 
 **The Command layer is the contract.** The UI never mutates a buffer directly. It resolves input to a `Command`, hands it to core, and renders the result. This gives you, free: a scriptable test harness, remappable keys, a data-driven footer, and undo that can't be bypassed.
@@ -145,14 +145,14 @@ This is the phase that makes it *this* editor rather than a generic one. Don't r
 - **Prompt line**: single-line input above the footer, with its own footer row of shortcuts while active. Used for save-as, goto line, search, replace. History with up/down.
 - **Contexts**: `editor`, `prompt`, `tree`, `search`. Keymap and footer are context-scoped.
 - Commands: `^G` help (a scrollable text pane, not a dialog), `^W` incremental search with match highlight and wrap-around, `^\` search-and-replace with per-match y/n/a confirmation, `^_` goto line:column, `^K`/`^U` cut buffer with the nano accumulate-on-consecutive-cuts behavior, `^C` cursor position, `^R` insert file at cursor.
-- `nib-harness`: drive the editor headlessly by feeding chord strings, assert on buffer + status + footer state.
+- `aitch-harness`: drive the editor headlessly by feeding chord strings, assert on buffer + status + footer state.
 
 **Acceptance:** someone with nano muscle memory sits down and edits a config file without reading anything. Harness tests cover every footer command.
 
 ### Phase 4 — Folder mode
 Nano has no equivalent, so this is invention. Keep it keyboard-first and keep it quiet.
 
-- `nib .` or `nib ~/src/project` opens a workspace.
+- `aitch .` or `aitch ~/src/project` opens a workspace.
 - Sidebar tree: lazy directory reads, virtualized (only visible rows exist), `ignore` crate for `.gitignore` + a config ignore list. Toggle with `M-T`. Focusable with its own footer.
 - `notify` watcher with debounce; external changes update the tree and mark buffers stale (prompt to reload, never silently overwrite).
 - Multiple buffers with a `M-,` / `M-.` cycle and `M-B` buffer list on the prompt line. **Decide now: no tab bar.** A tab strip is a second chrome element competing with the footer. A buffer list on the prompt line is more nano.
@@ -163,7 +163,7 @@ Nano has no equivalent, so this is invention. Keep it keyboard-first and keep it
 ### Phase 5 — Syntax highlighting
 - `tree-sitter` with incremental reparse on edit, parsing off the UI thread.
 - Ship grammars for: Rust, C/C++, Python, JS/TS, JSON, TOML, YAML, Markdown, shell, HTML/CSS.
-- Highlight query → theme token → color. Two themes to start, one light one dark, plus `nibrc` overrides.
+- Highlight query → theme token → color. Two themes to start, one light one dark, plus `aitchrc` overrides.
 - Bracket match, current-line highlight, optional line numbers, whitespace rendering, soft wrap toggle.
 
 **Acceptance:** typing in a 10k-line Rust file stays under a 16 ms frame budget with highlighting on.
@@ -176,7 +176,7 @@ Nano has no equivalent, so this is invention. Keep it keyboard-first and keep it
 **Acceptance:** search a 500 MB tree, first results visible in under 200 ms, UI never blocks.
 
 ### Phase 7 — Config and polish
-- `nibrc.toml`: theme, keymap profile, custom binds, tab width, expand-tabs, wrap, ignore globs, font family/size. Live reload on save.
+- `aitchrc.toml`: theme, keymap profile, custom binds, tab width, expand-tabs, wrap, ignore globs, font family/size. Live reload on save.
 - `--help`, `+LINE` argument, stdin piping, `$EDITOR` compatibility (blocks until buffer closes — needed for git commit messages).
 - Session restore: reopen last workspace and buffers.
 - Crash-safe recovery files.
@@ -208,7 +208,7 @@ That last one matters more than it sounds. An editor that burns a core while sit
 Three layers, in priority order:
 
 1. **Core unit tests** — buffer ops, undo coalescing, encoding round-trips, keymap resolution, ignore matching. Fast, no GPU, run on every save.
-2. **Harness tests** — `nib-harness` feeds chord sequences into the full command pipeline and asserts on buffer content, cursor position, status text, and footer contents. This is where nano-fidelity gets locked down. Every Phase 3 command needs one.
+2. **Harness tests** — `aitch-harness` feeds chord sequences into the full command pipeline and asserts on buffer content, cursor position, status text, and footer contents. This is where nano-fidelity gets locked down. Every Phase 3 command needs one.
 3. **Golden-file IO tests** — the round-trip fixtures from Phase 2. Never delete these.
 
 Manual/visual checks are the only thing left for rendering, and they should be the only thing left.
@@ -220,10 +220,10 @@ Manual/visual checks are the only thing left for rendering, and they should be t
 Put this at the root before writing any code:
 
 ```markdown
-# nib — agent instructions
+# Aitch — agent instructions
 
 ## Non-negotiables
-- `nib-core` has ZERO gui dependencies. No winit, wgpu, or cosmic-text in its Cargo.toml. Ever.
+- `aitch-core` has ZERO gui dependencies. No winit, wgpu, or cosmic-text in its Cargo.toml. Ever.
 - All buffer mutation goes through `edit.rs`. If you're calling ropey directly outside that file, stop.
 - The UI does not know what keys do. It resolves input to a Command and sends it.
 - Footer text is generated from the keymap, never hardcoded.
@@ -256,7 +256,7 @@ Paste this into Claude Code once the repo exists:
 >
 > We're doing Phase 0 only. Set up the Cargo workspace exactly as specified in the architecture section, get a winit window with a wgpu surface clearing to a solid color, and wire up GitHub Actions to build, test, and clippy on Windows and Ubuntu.
 >
-> Also write `keymaps/nano.toml` and `keymaps/modern.toml` per the keybinding section, plus the parser and its unit tests in `nib-core/src/keymap.rs`. Nothing is wired to behavior yet — I just want the data model and tests.
+> Also write `keymaps/nano.toml` and `keymaps/modern.toml` per the keybinding section, plus the parser and its unit tests in `aitch-core/src/keymap.rs`. Nothing is wired to behavior yet — I just want the data model and tests.
 >
 > Before you start: list what you're going to create, flag anything in the plan you think is wrong or underspecified, and wait for me to confirm.
 

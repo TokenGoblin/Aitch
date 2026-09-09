@@ -1,6 +1,6 @@
 [package]
-name = "nib-ui"
-description = "Window, GPU surface and rendering for nib."
+name = "aitch-ui"
+description = "Window, GPU surface and rendering for aitch."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,9 +8,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-nib-core = { workspace = true }
+aitch-core = { workspace = true }
+cosmic-text = "0.17"
 winit = "0.30"
 wgpu = "26"
 # Not in the plan's stack table: wgpu's adapter and device requests are async
 # and the event loop is not. Twenty lines of hand-rolled executor or this.
 pollster = "1"
+
+[dev-dependencies]
+# The offscreen render test drives wgpu directly.
+aitch-core = { workspace = true }

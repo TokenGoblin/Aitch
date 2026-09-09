@@ -1,10 +1,10 @@
-## nib keymap — `nano` profile (the default)
+## Aitch keymap — `nano` profile (the default)
 ##
 ## Faithful to GNU nano. ^X exits, ^O writes, ^W finds, ^K/^U cut and uncut,
 ## M-U/M-E undo and redo. Where nano has no equivalent (the sidebar, quick
 ## open, project search) the binding is invented but stays in nano's idiom.
 ##
-## Chord grammar and the shift/layout rules: crates/nib-core/src/keymap.rs.
+## Chord grammar and the shift/layout rules: crates/aitch-core/src/keymap.rs.
 ## `label` puts a binding on the footer; `priority` decides what survives when
 ## the footer reflows on a narrow window. Nothing here is hardcoded in the UI.
 ##

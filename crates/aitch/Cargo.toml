@@ -1,13 +1,13 @@
 [package]
-name = "nib"
+name = "aitch"
 description = "A GUI text editor with nano's interaction model."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-default-run = "nib"
+default-run = "aitch"
 
 [dependencies]
-nib-core = { workspace = true }
-nib-ui = { workspace = true }
+aitch-core = { workspace = true }
+aitch-ui = { workspace = true }

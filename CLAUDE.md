@@ -1,7 +1,7 @@
-# nib — agent instructions
+# Aitch — agent instructions
 
 ## Non-negotiables
-- `nib-core` has ZERO gui dependencies. No winit, wgpu, or cosmic-text in its Cargo.toml. Ever.
+- `aitch-core` has ZERO gui dependencies. No winit, wgpu, or cosmic-text in its Cargo.toml. Ever.
 - All buffer mutation goes through `edit.rs`. If you're calling ropey directly outside that file, stop.
 - The UI does not know what keys do. It resolves input to a Command and sends it.
 - Footer text is generated from the keymap, never hardcoded.

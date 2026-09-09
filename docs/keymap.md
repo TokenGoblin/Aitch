@@ -83,7 +83,7 @@ the way nano's do:
 
 ## Where the code is
 
-- `crates/nib-core/src/keymap.rs` — chord parsing, file parsing, resolution,
+- `crates/aitch-core/src/keymap.rs` — chord parsing, file parsing, resolution,
   footer generation.
-- `crates/nib-core/src/command.rs` — the command names a keymap may use.
-- `crates/nib-harness/src/lib.rs` — feed a chord sequence, assert what it did.
+- `crates/aitch-core/src/command.rs` — the command names a keymap may use.
+- `crates/aitch-harness/src/lib.rs` — feed a chord sequence, assert what it did.

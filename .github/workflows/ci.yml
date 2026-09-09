@@ -53,4 +53,9 @@ jobs:
       # This checks the binary links and starts. The window itself is a manual
       # check on both platforms until it is worth standing up Xvfb + lavapipe.
       - name: Smoke test the binary
-        run: cargo run --release -- --version
+        run: cargo run --release -p aitch -- --version
+
+      # The benches are budgets from PLAN.md §6, not a gate yet: failing on a
+      # regression needs a stored baseline. Keep them compiling meanwhile.
+      - name: Build benches
+        run: cargo bench --workspace --no-run

@@ -1,30 +1,45 @@
-# nib
+# Aitch
 
-A GUI text editor with nano's interaction model and VS Code's project model.
+A clean and simple text editor with file browsing — nano's interaction model,
+VS Code's project model.
 
-Modeless — you open it and you type. The footer is the UI: two rows of
+Modeless: you open it and you type. The footer is the UI — two rows of
 context-sensitive shortcuts, always visible, generated from the active keymap
 rather than hardcoded. Prompts happen on a line above the footer. No modal
 dialogs, no floating windows.
 
-**Status: Phase 0.** The window opens and clears. The keymap data model is
-built and tested; nothing is wired to behavior yet. See [`PLAN.md`](PLAN.md)
-for the phases.
+**Status: Phase 1.** Text renders and you can move around it. Editing is Phase
+2, the footer Phase 3, folder mode Phase 4. See [`PLAN.md`](PLAN.md).
+
+## Build and run
+
+Needs a stable Rust toolchain.
+
+```
+cargo test --workspace
+cargo run -p aitch -- some-file.txt
+```
+
+Arrow keys, Home/End, PgUp/PgDn, Ctrl+arrows for words, Ctrl+Home/End for the
+file. Click to place the cursor, scroll with the wheel or a touchpad.
 
 ## Layout
 
 ```
 crates/
-  nib-core/     rope, edits, history, commands, keymap, search, workspace, IO
-  nib-ui/       winit + wgpu + (from Phase 1) cosmic-text
-  nib-harness/  headless driver: feed chords, assert on state
-  nib/          the binary: argument parsing and wiring
-keymaps/        nano.toml (default) and modern.toml
+  aitch-core/     rope, cursor, commands, keymap  — zero GUI dependencies
+  aitch-ui/       winit + wgpu + cosmic-text
+  aitch-harness/  headless driver: feed chords, assert on state
+  aitch/          the binary: argument parsing and wiring
+keymaps/          nano.toml (default) and modern.toml
 ```
 
-`nib-core` has zero GUI dependencies, which is what lets almost all of this be
+`aitch-core` has no GUI dependencies, which is what lets nearly all of this be
 tested without a window. The UI never mutates a buffer: it resolves input to a
-`Command` and hands it to core.
+`Command` and hands it over.
+
+Only the lines on screen are ever laid out, so a 50 MB log costs the same per
+frame as a 50 line one.
 
 ## Keymaps
 
@@ -38,14 +53,16 @@ Two profiles ship, both just data:
 `M-M` switches between them. Writing your own is the same format:
 [`docs/keymap.md`](docs/keymap.md).
 
-## Build
-
-Needs a stable Rust toolchain.
+## Testing
 
 ```
-cargo test --workspace
-cargo run
+cargo test --workspace                  # unit, harness and offscreen render tests
+cargo bench -p aitch-core               # the PLAN.md §6 budgets
+cargo run -p aitch-ui --example dump_frame -- file.rs frame.raw
 ```
+
+`dump_frame` renders a frame headlessly and writes raw RGBA, so the one
+remaining manual step — looking at the text — needs no display.
 
 ## Not goals
 

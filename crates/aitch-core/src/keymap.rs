@@ -49,6 +49,13 @@ use serde::Deserialize;
 
 use crate::command::{Command, UnknownCommand};
 
+/// The `nano` profile, compiled in, so the editor and its tests never depend
+/// on the working directory. Phase 7 adds loading one from `aitchrc`.
+pub const NANO_PROFILE: &str = include_str!("../../../keymaps/nano.toml");
+
+/// The `modern` profile, compiled in.
+pub const MODERN_PROFILE: &str = include_str!("../../../keymaps/modern.toml");
+
 /// Where a chord is being pressed. Keymap and footer are both context-scoped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -410,6 +417,25 @@ pub struct Keymap {
 }
 
 impl Keymap {
+    /// The shipped `nano` profile.
+    pub fn nano() -> Keymap {
+        Keymap::from_toml(NANO_PROFILE).expect("nano.toml is a compile-time asset")
+    }
+
+    /// The shipped `modern` profile.
+    pub fn modern() -> Keymap {
+        Keymap::from_toml(MODERN_PROFILE).expect("modern.toml is a compile-time asset")
+    }
+
+    /// One of the shipped profiles, by name.
+    pub fn by_name(name: &str) -> Option<Keymap> {
+        match name {
+            "nano" => Some(Keymap::nano()),
+            "modern" => Some(Keymap::modern()),
+            _ => None,
+        }
+    }
+
     /// Parse a keymap profile from TOML.
     pub fn from_toml(src: &str) -> Result<Keymap, KeymapError> {
         let raw: RawKeymap = toml::from_str(src)?;
@@ -613,8 +639,8 @@ struct RawBinding {
 mod tests {
     use super::*;
 
-    const NANO: &str = include_str!("../../../keymaps/nano.toml");
-    const MODERN: &str = include_str!("../../../keymaps/modern.toml");
+    const NANO: &str = NANO_PROFILE;
+    const MODERN: &str = MODERN_PROFILE;
 
     fn chord(s: &str) -> Chord {
         Chord::parse(s).expect("test chord should parse")

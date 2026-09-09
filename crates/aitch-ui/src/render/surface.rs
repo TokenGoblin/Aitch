@@ -1,12 +1,23 @@
-//! The wgpu device, queue and swapchain for one window.
+//! The wgpu device, queue and swapchain for one window, and the frame it draws.
 
 use std::fmt;
 use std::sync::Arc;
 
+use aitch_core::{Buffer, Position};
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
-use crate::theme::Color;
+use crate::render::atlas::Atlas;
+use crate::render::quads::{Instances, QuadPipeline};
+use crate::render::text::TextRenderer;
+use crate::theme::Theme;
+
+/// Side of the square glyph atlas in texels. A full screen of monospace text
+/// needs a few hundred distinct glyphs; this holds thousands.
+const ATLAS_SIZE: u32 = 1024;
+
+/// Default font size in logical pixels. `aitchrc` overrides it in Phase 7.
+const FONT_SIZE: f32 = 14.0;
 
 /// Everything needed to put pixels in a window.
 pub struct Surface {
@@ -14,8 +25,12 @@ pub struct Surface {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    /// Physical pixels per logical pixel. Phase 1's glyph cache keys on this.
+    /// Physical pixels per logical pixel.
     scale_factor: f64,
+    atlas: Atlas,
+    pipeline: QuadPipeline,
+    text: TextRenderer,
+    instances: Instances,
 }
 
 impl Surface {
@@ -37,9 +52,8 @@ impl Surface {
         .map_err(|e| SurfaceError(format!("no usable GPU adapter: {e}")))?;
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("nib device"),
+            label: Some("aitch device"),
             required_features: wgpu::Features::empty(),
-            // Phase 1 raises these only if cosmic-text's atlas needs it.
             required_limits: wgpu::Limits::downlevel_defaults(),
             memory_hints: wgpu::MemoryHints::default(),
             trace: wgpu::Trace::Off,
@@ -69,12 +83,20 @@ impl Surface {
         };
         surface.configure(&device, &config);
 
+        let atlas = Atlas::new(&device, &queue, ATLAS_SIZE);
+        let pipeline = QuadPipeline::new(&device, format, atlas.bind_group_layout());
+        let text = TextRenderer::new(FONT_SIZE, scale_factor as f32);
+
         Ok(Surface {
             surface,
             device,
             queue,
             config,
             scale_factor,
+            atlas,
+            pipeline,
+            text,
+            instances: Instances::default(),
         })
     }
 
@@ -87,8 +109,23 @@ impl Surface {
         self.scale_factor
     }
 
+    /// Physical height of one line of text.
+    pub fn line_height(&self) -> f32 {
+        self.text.line_height()
+    }
+
+    /// How many whole lines of text fit in the window.
+    pub fn visible_lines(&self) -> usize {
+        self.text.lines_for_height(self.config.height as f32)
+    }
+
+    /// React to a DPI change: re-derive the metrics and drop every cached
+    /// glyph, since all of them were rasterized for the old scale.
     pub fn set_scale_factor(&mut self, scale_factor: f64) {
         self.scale_factor = scale_factor;
+        if self.text.set_scale_factor(scale_factor as f32) {
+            self.atlas.reset(&self.queue);
+        }
     }
 
     /// Reconfigure after a resize. A zero-sized window is skipped rather than
@@ -102,10 +139,39 @@ impl Surface {
         self.surface.configure(&self.device, &self.config);
     }
 
-    /// Clear the window to `color`.
+    /// Map a click in physical pixels to a position in the buffer.
+    pub fn hit(&self, x: f32, y: f32, sub_line_offset: f32) -> Option<Position> {
+        self.text.hit(x, y, -sub_line_offset)
+    }
+
+    /// Draw one frame.
     ///
-    /// Phase 1 turns this into a real render pass with text in it.
-    pub fn render(&mut self, color: Color) -> Result<(), SurfaceError> {
+    /// `first_line` is the top visible line and `sub_line_offset` how far into
+    /// it the window has scrolled, in physical pixels — that pair is what makes
+    /// touchpad scrolling smooth instead of jumping a line at a time.
+    pub fn render(
+        &mut self,
+        buffer: &Buffer,
+        first_line: usize,
+        sub_line_offset: f32,
+        generation: u64,
+        theme: &Theme,
+    ) -> Result<(), SurfaceError> {
+        let size = (self.config.width as f32, self.config.height as f32);
+        self.text.prepare(buffer, first_line, size, generation);
+
+        self.instances.clear();
+        self.text.push_instances(
+            &self.queue,
+            &mut self.atlas,
+            &mut self.instances,
+            buffer,
+            -sub_line_offset,
+            theme,
+        );
+        self.pipeline
+            .upload(&self.device, &self.queue, [size.0, size.1], &self.instances);
+
         let frame = match self.surface.get_current_texture() {
             Ok(frame) => frame,
             // The swapchain went stale (a resize or a display change raced us).
@@ -123,25 +189,29 @@ impl Surface {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("nib frame"),
+                label: Some("aitch frame"),
             });
 
-        // The pass exists only for its clear value in Phase 0.
-        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("nib clear"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(color.into()),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("aitch text"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(theme.background.into()),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            self.pipeline
+                .draw(&mut pass, self.atlas.bind_group(), &self.instances);
+        }
 
         self.queue.submit(Some(encoder.finish()));
         frame.present();

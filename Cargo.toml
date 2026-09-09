@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/nib-core",
-    "crates/nib-ui",
-    "crates/nib-harness",
-    "crates/nib",
+    "crates/aitch-core",
+    "crates/aitch-ui",
+    "crates/aitch-harness",
+    "crates/aitch",
 ]
 
 [workspace.package]
@@ -12,13 +12,14 @@ version = "0.0.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
-repository = "https://github.com/TokenGoblin/nib"
+repository = "https://github.com/TokenGoblin/Aitch"
 
 [workspace.dependencies]
-nib-core = { path = "crates/nib-core" }
-nib-ui = { path = "crates/nib-ui" }
+aitch-core = { path = "crates/aitch-core" }
+aitch-ui = { path = "crates/aitch-ui" }
 
 # See PLAN.md §2 for the stack table. No dependency is added without a line there.
+ropey = "1.6"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 

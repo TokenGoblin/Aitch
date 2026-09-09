@@ -1,6 +1,6 @@
 //! Colors. Phase 0 needs exactly one of them.
 //!
-//! Phase 5 replaces this with a loadable theme plus `nibrc` overrides.
+//! Phase 5 replaces this with a loadable theme plus `aitchrc` overrides.
 
 /// A linear-space RGBA color, the form wgpu wants for a clear value.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -41,12 +41,16 @@ impl From<Color> for wgpu::Color {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Theme {
     pub background: Color,
+    pub foreground: Color,
+    pub cursor: Color,
 }
 
 impl Theme {
     pub fn dark() -> Theme {
         Theme {
             background: Color::srgb(0x14, 0x16, 0x1a),
+            foreground: Color::srgb(0xd4, 0xd7, 0xdd),
+            cursor: Color::srgb(0x7a, 0xa2, 0xf7),
         }
     }
 }
@@ -92,5 +96,14 @@ mod tests {
         let bg = Theme::dark().background;
         assert!(bg.r < 0.02 && bg.g < 0.02 && bg.b < 0.02);
         assert_eq!(bg.a, 1.0);
+    }
+
+    #[test]
+    fn text_is_legible_against_the_background() {
+        let theme = Theme::dark();
+        // Not a contrast-ratio calculation, just a guard against a theme that
+        // paints text the same color as the page it sits on.
+        assert!(theme.foreground.g > theme.background.g * 10.0);
+        assert!(theme.cursor.b > theme.background.b);
     }
 }

@@ -1,16 +1,11 @@
-//! Drive nib without a window.
+//! Drive aitch without a window.
 //!
 //! Phase 0 can only do the half of the pipeline that exists: chords in,
 //! commands out, plus whatever the footer would show. Phase 3 grows this into
 //! the real thing — feed a chord sequence, assert on buffer content, cursor
 //! position, status text and footer — and every footer command gets a test.
 
-use nib_core::{Chord, ChordParseError, Command, Context, Keymap, KeymapError};
-
-/// The keymap profiles that ship with nib, compiled in so tests do not depend
-/// on the working directory.
-pub const NANO_KEYMAP: &str = include_str!("../../../keymaps/nano.toml");
-pub const MODERN_KEYMAP: &str = include_str!("../../../keymaps/modern.toml");
+use aitch_core::{Chord, ChordParseError, Command, Context, Keymap, KeymapError};
 
 /// A headless editor session.
 pub struct Harness {
@@ -32,12 +27,12 @@ impl Harness {
 
     /// A session using the shipped `nano` profile.
     pub fn nano() -> Harness {
-        Harness::new(Keymap::from_toml(NANO_KEYMAP).expect("nano.toml is a compile-time asset"))
+        Harness::new(Keymap::nano())
     }
 
     /// A session using the shipped `modern` profile.
     pub fn modern() -> Harness {
-        Harness::new(Keymap::from_toml(MODERN_KEYMAP).expect("modern.toml is a compile-time asset"))
+        Harness::new(Keymap::modern())
     }
 
     /// A session using a keymap written inline by a test.
