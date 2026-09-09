@@ -65,10 +65,20 @@ impl Surface {
         }))
         .map_err(|e| SurfaceError(format!("no usable GPU adapter: {e}")))?;
 
+        // Downlevel limits keep this running on weak hardware, but their
+        // texture cap is 2048 and the surface is a texture: a window wider
+        // than that fails to configure, and wgpu turns that into a panic
+        // rather than an error we could report. 2048 is not a large window --
+        // it is 960 logical pixels at 225% display scaling, or any maximized
+        // window on a 2560-wide monitor -- so the resolution limits come from
+        // the adapter and only the rest stays downlevel.
+        let limits = wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
+        let max_texture = limits.max_texture_dimension_2d;
+
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("aitch device"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_defaults(),
+            required_limits: limits,
             memory_hints: wgpu::MemoryHints::default(),
             trace: wgpu::Trace::Off,
         }))
@@ -85,8 +95,8 @@ impl Surface {
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
-            width: size.width.max(1),
-            height: size.height.max(1),
+            width: surface_extent(size.width, max_texture),
+            height: surface_extent(size.height, max_texture),
             // Fifo is the only mode guaranteed everywhere, and it is what an
             // editor wants: no tearing, no spinning to produce frames nobody
             // asked for. See the idle-CPU budget in PLAN.md §6.
@@ -158,8 +168,9 @@ impl Surface {
         if size.width == 0 || size.height == 0 {
             return;
         }
-        self.config.width = size.width;
-        self.config.height = size.height;
+        let limit = self.device.limits().max_texture_dimension_2d;
+        self.config.width = surface_extent(size.width, limit);
+        self.config.height = surface_extent(size.height, limit);
         self.surface.configure(&self.device, &self.config);
     }
 
@@ -266,3 +277,51 @@ impl fmt::Display for SurfaceError {
 }
 
 impl std::error::Error for SurfaceError {}
+
+/// One side of the surface, in physical pixels, kept inside what the device
+/// will accept.
+///
+/// The surface is a texture, so a window larger than `max_texture_dimension_2d`
+/// cannot be configured — and `Surface::configure` returns `()`, so wgpu
+/// reports that by panicking rather than by handing back an error this code
+/// could turn into a message. Clamping means an absurdly large window draws
+/// the top-left of itself instead of taking the editor down with it.
+///
+/// Zero is not a size a surface can have either; a minimised window reports
+/// one, and configuring with it is a validation error of its own.
+fn surface_extent(pixels: u32, max_texture: u32) -> u32 {
+    pixels.clamp(1, max_texture.max(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_window_within_the_limit_is_left_alone() {
+        assert_eq!(surface_extent(1200, 8192), 1200);
+        assert_eq!(surface_extent(8192, 8192), 8192);
+    }
+
+    #[test]
+    fn a_window_past_the_limit_is_clamped_rather_than_fatal() {
+        // The v0.1.0 crash: 960 logical pixels at 225% scaling is 2160
+        // physical, and the device was asked for downlevel limits, whose
+        // texture cap is 2048. Configuring the surface panicked inside wgpu,
+        // so the window appeared and the process died with its message in a
+        // console that closed with it.
+        assert_eq!(surface_extent(2160, 2048), 2048);
+        assert_eq!(surface_extent(3232, 2048), 2048);
+    }
+
+    #[test]
+    fn a_minimised_window_still_has_a_size() {
+        // Zero is as invalid as too large, and Windows reports it every time
+        // the window is minimised.
+        assert_eq!(surface_extent(0, 8192), 1);
+        // A device claiming no texture support at all should not produce a
+        // zero-sized surface either.
+        assert_eq!(surface_extent(0, 0), 1);
+        assert_eq!(surface_extent(4096, 0), 1);
+    }
+}
