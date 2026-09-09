@@ -681,17 +681,42 @@ mod tests {
     #[test]
     fn the_window_icon_is_there_and_the_right_shape() {
         // window_icon() answers None on anything it does not like, and winit
-        // then quietly uses the platform default -- so a truncated or
-        // regenerated-at-the-wrong-size asset would cost the icon with nothing
-        // said. This is the loud version of that.
+        // then quietly uses the platform default -- so a truncated asset, or
+        // one regenerated at a different size, would cost the icon with
+        // nothing said. This is the loud version of that.
+        //
+        // The size is asserted rather than merely checked against itself. A
+        // file that is nothing but a zeroed header describes a 0x0 icon, and
+        // that is square, its pixel count does match, and winit accepts it:
+        // `RgbaIcon::from_rgba` asks only that the byte count divide by four
+        // and equal width * height, which 0 and 0 do. Every self-consistency
+        // check passes on exactly the truncation this exists to catch. It is
+        // weaker still off Windows, where winit's `NoIcon` does nothing but
+        // that same arithmetic, and CI runs on ubuntu as well.
         const RAW: &[u8] = include_bytes!("../assets/icon.rgba");
+        // What make_icon's WINDOW writes; change the two together.
+        const EXPECTED: u32 = 64;
+
+        assert!(
+            RAW.len() > 8,
+            "icon.rgba is {} bytes, which is not even a header",
+            RAW.len()
+        );
+
         let width = u32::from_le_bytes(RAW[0..4].try_into().unwrap());
         let height = u32::from_le_bytes(RAW[4..8].try_into().unwrap());
+        assert_eq!(
+            (width, height),
+            (EXPECTED, EXPECTED),
+            "the asset is {width}x{height}; make_icon writes {EXPECTED}x{EXPECTED}"
+        );
 
-        assert_eq!(width, height, "{width}x{height} is not square");
+        // In usize, the way window_icon() does it. Multiplying in u32 would
+        // wrap on a bogus header, and `cargo test --release` -- which the
+        // release workflow runs -- wraps silently rather than panicking.
         assert_eq!(
             RAW.len() - 8,
-            (width * height * 4) as usize,
+            (width as usize) * (height as usize) * 4,
             "the pixels do not match the {width}x{height} header"
         );
         assert!(
