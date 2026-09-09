@@ -130,6 +130,11 @@ foreach ($doc in @('README.md', 'LICENSE', 'docs\guide.md', 'docs\config.md', 'd
     }
 }
 
+# The installer UI comes from an extension package, which is not part of the
+# wix tool itself. Adding one that is already there is a no-op, and this beats
+# error WIX0144 four minutes into a build.
+Invoke-Native { wix extension add --global WixToolset.UI.wixext/5.0.2 } 'wix extension add'
+
 $msi = Join-Path $outputDir "aitch-$Version-x86_64.msi"
 
 Invoke-Native {

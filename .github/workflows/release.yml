@@ -37,8 +37,12 @@ jobs:
       - name: Test
         run: cargo test --workspace --release
 
+      # The UI extension is a separate package, and wix only reports its
+      # absence once it is already building (error WIX0144).
       - name: Install WiX
-        run: dotnet tool install --global wix --version 5.0.2
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add --global WixToolset.UI.wixext/5.0.2
 
       - name: Work out the version
         id: version
