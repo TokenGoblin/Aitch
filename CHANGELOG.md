@@ -37,6 +37,14 @@ Windows installer.
 
 ### Fixed
 
+- **Typing a comment sometimes left it uncoloured.** The syntax worker drops
+  superseded requests rather than queuing them, which is right, but it was
+  dropping their *edits* too. Tree-sitter replays those edits against the tree
+  it already has before reparsing, so a gap in the sequence left it adjusting
+  a document that never existed and reusing subtrees at meaningless offsets.
+  Typing fast enough to coalesce two requests — which is to say, typing —
+  reproduced it about a third of the time. Coalescing now keeps every edit,
+  in order.
 - **The guard against a corrupting edit now exists in release builds.** All
   buffer mutation goes through `edit.rs`, which checks that an edit removes
   the text it claims to; that check was a `debug_assert`, so the binary

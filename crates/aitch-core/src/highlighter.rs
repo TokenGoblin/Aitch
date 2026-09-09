@@ -13,7 +13,9 @@
 //!   applied edit.
 //! - **Stale work is dropped, not queued.** Typing faster than the parser runs
 //!   would otherwise build a backlog of answers nobody wants any more. Only
-//!   the newest request is worked on.
+//!   the newest request is worked on — but its *edits* are the accumulated
+//!   edits of everything it superseded, because tree-sitter adjusts its old
+//!   tree by replaying them and a gap makes it reuse the wrong subtrees.
 
 use std::ops::Range;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -30,6 +32,29 @@ struct Job {
     edits: Vec<TextEdit>,
     range: Range<usize>,
     generation: u64,
+}
+
+impl Job {
+    /// Replace this request with a newer one, keeping both sets of edits.
+    ///
+    /// The snapshot, range and generation are the newer one's: that is the
+    /// document the answer will describe. The edits are not. They are how the
+    /// text the parser last saw became this text, and tree-sitter replays them
+    /// against its existing tree before reparsing. Dropping the superseded
+    /// job's edits leaves that tree adjusted for a document that never
+    /// existed, and it then reuses subtrees at the wrong offsets — a comment
+    /// typed at the top of a file comes back uncoloured until the next
+    /// keystroke happens to land a job that is not coalesced.
+    fn superseded_by(self, newer: Job) -> Job {
+        let mut edits = self.edits;
+        edits.extend(newer.edits);
+        Job {
+            text: newer.text,
+            edits,
+            range: newer.range,
+            generation: newer.generation,
+        }
+    }
 }
 
 /// Coloured spans for one snapshot of the document.
@@ -100,7 +125,7 @@ impl SyntaxThread {
                     // use to anyone.
                     loop {
                         match incoming.try_recv() {
-                            Ok(newer) => job = newer,
+                            Ok(newer) => job = job.superseded_by(newer),
                             Err(TryRecvError::Empty) => break,
                             Err(TryRecvError::Disconnected) => return,
                         }
@@ -309,6 +334,78 @@ mod tests {
         let highlights = thread.highlights();
         assert_eq!(highlights.token_at(2), Some(Token::Comment), "inside //");
         assert_eq!(highlights.token_at(8), Some(Token::Keyword), "fn");
+    }
+
+    #[test]
+    fn coalescing_two_requests_keeps_both_sets_of_edits() {
+        // The parser replays these against the tree it already has. Keeping
+        // only the newer job's edits leaves a gap, and tree-sitter then reuses
+        // subtrees at offsets that no longer mean anything.
+        let older = Job {
+            text: Rope::from_str("ab"),
+            edits: vec![edit_at(0), edit_at(1)],
+            range: 0..2,
+            generation: 1,
+        };
+        let newer = Job {
+            text: Rope::from_str("abcd"),
+            edits: vec![edit_at(2), edit_at(3)],
+            range: 0..4,
+            generation: 2,
+        };
+
+        let merged = older.superseded_by(newer);
+        assert_eq!(merged.generation, 2, "the newer snapshot is the answer");
+        assert_eq!(merged.text.to_string(), "abcd");
+        assert_eq!(merged.range, 0..4);
+        let starts: Vec<usize> = merged.edits.iter().map(|e| e.start_byte).collect();
+        assert_eq!(starts, vec![0, 1, 2, 3], "in order, and none lost");
+    }
+
+    /// A one-character insertion at `byte`, which is all these tests need.
+    fn edit_at(byte: usize) -> TextEdit {
+        TextEdit {
+            start_byte: byte,
+            old_end_byte: byte,
+            new_end_byte: byte + 1,
+            start_point: (0, byte),
+            old_end_point: (0, byte),
+            new_end_point: (0, byte + 1),
+        }
+    }
+
+    #[test]
+    fn typing_a_comment_without_pausing_still_colours_it() {
+        // Every keystroke sends a request, and the worker coalesces whatever
+        // has piled up. The answer has to describe the text as typed however
+        // many of those requests were merged on the way.
+        let mut buffer = Buffer::from_str("fn main() {}\n");
+        let mut thread = SyntaxThread::new(Language::Rust, || {}).expect("a worker");
+        thread.request(
+            &buffer.text().clone(),
+            Vec::new(),
+            0..buffer.text().len_bytes(),
+        );
+        assert!(settle(&mut thread));
+
+        buffer.set_cursor(crate::Position::new(0, 0));
+        for character in "// note\n".chars() {
+            if character == '\n' {
+                buffer.insert("\n");
+            } else {
+                buffer.insert(&character.to_string());
+            }
+            let text = buffer.text().clone();
+            let edits = buffer.take_text_edits();
+            thread.request(&text, edits, 0..text.len_bytes());
+        }
+
+        assert!(settle(&mut thread), "the worker never caught up");
+        assert_eq!(
+            thread.highlights().token_at(2),
+            Some(Token::Comment),
+            "the comment that was just typed came back uncoloured"
+        );
     }
 
     #[test]
