@@ -6,6 +6,25 @@ All notable changes to this project are documented here.
 
 ### Packaging
 
+- **An icon**, on the Start menu shortcut and in Add/Remove Programs, both of
+  which were blank. Generated from `Theme::dark` by
+  `cargo run -p aitch-ui --release --example make_icon`, so it cannot drift
+  away from the editor it stands for: the tile is what the footer sits on, the
+  H is the cursor's blue, the two bars under it are a key cap's. No font is
+  involved — the H is three rectangles, which is what keeps it crisp at 16 px
+  — and every size is drawn at 4× and averaged down.
+  Sizes under 64 px are stored as uncompressed DIBs and the rest as PNGs:
+  modern Windows reads PNG entries at any size, GDI+ reads none of them, and
+  the small sizes are where the old APIs look.
+
+- **Phase 8 is finished for Windows and stopped there.** No AppImage, no
+  `.deb`, no Flatpak. The editor builds, tests and runs on Linux and CI does
+  all three on every push against lavapipe; only the packaging is missing, and
+  [`PLAN.md`](PLAN.md) now records that along with the two things worth
+  knowing before picking it up — chiefly that a statically linked Linux build
+  is not available at all, because winit, wgpu and cosmic-text `dlopen` their
+  X11, Wayland and Vulkan libraries and a static musl binary cannot `dlopen`.
+
 - **A portable Windows zip**, the second half of what PLAN.md Phase 8 asks of
   Windows. Same binary and same documents as the installer, with nothing to
   install: unpack it and run `aitch.exe`. It is built before WiX is invoked

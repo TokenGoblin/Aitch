@@ -48,7 +48,9 @@ entry; settings, sessions and recovery files still live under `%APPDATA%` and
 cargo install --path crates/aitch
 ```
 
-Linux and macOS packages are not built yet; the editor itself runs on both.
+Linux and macOS packages are not built yet — no AppImage, no `.deb`, no
+Flatpak. The editor itself builds, tests and runs on Linux, and CI does all
+three on every push; only the packaging is missing.
 
 ## Build and run
 
@@ -183,9 +185,11 @@ Honest about what it does not do yet:
 - **No soft wrap.** Long lines scroll sideways.
 - **Highlighting inside Markdown code fences** is not done — the fence is
   highlighted, its contents are not.
-- **Double-click to select a word** is not wired up; use `^6` and the arrows,
-  or Shift with a movement key.
 - **One window.** Several buffers, no second window.
+- **No double-click to select a word** and no triple-click for a line. Click
+  to place the cursor and drag to select both work, as do the wheel and a
+  touchpad's kinetic scrolling; the file tree is keyboard-only.
+- **Packaged for Windows only.** See [`PLAN.md`](PLAN.md) Phase 8.
 
 ## Not goals
 

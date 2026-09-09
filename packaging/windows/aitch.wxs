@@ -34,6 +34,13 @@
     <SummaryInformation Description="A text editor with nano's interaction model and VS Code's project model."
                         Manufacturer="$(Manufacturer)" />
 
+    <!-- Generated from the editor's own dark theme by the make_icon example;
+         see crates/aitch-ui/examples/make_icon.rs for the command. Note that
+         ARPPRODUCTICON is what Add/Remove Programs shows beside the entry,
+         and without it that row is blank. -->
+    <Icon Id="AitchIcon" SourceFile="$(IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="AitchIcon" />
+
     <!-- %LOCALAPPDATA%\Programs\Aitch -->
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="ProgramsFolder" Name="Programs">
@@ -78,7 +85,8 @@
                   Name="$(ProductName)"
                   Description="A text editor with nano's interaction model"
                   Target="[INSTALLFOLDER]aitch.exe"
-                  WorkingDirectory="INSTALLFOLDER" />
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AitchIcon" />
         <RemoveFolder Id="RemoveShortcutFolder" Directory="ShortcutFolder" On="uninstall" />
         <RegistryValue Root="HKCU"
                        Key="Software\$(Manufacturer)\$(ProductName)"

@@ -173,12 +173,21 @@ Invoke-Native { wix extension add --global WixToolset.UI.wixext/5.0.2 } 'wix ext
 
 $msi = Join-Path $outputDir "aitch-$Version-x86_64.msi"
 
+# Generated, not drawn: `cargo run -p aitch-ui --release --example make_icon --
+# packaging/windows/aitch.ico` redraws it from the editor's own dark theme.
+# Checked here because WiX reports a missing icon several minutes in.
+$icon = Join-Path $PSScriptRoot 'aitch.ico'
+if (-not (Test-Path $icon)) {
+    throw "No icon at $icon. Regenerate it with the make_icon example."
+}
+
 Invoke-Native {
     wix build (Join-Path $PSScriptRoot 'aitch.wxs') `
         -define "Version=$Version" `
         -define "BinaryPath=$binary" `
         -define "DocsPath=$root" `
         -define "LicenseRtf=$licenseRtf" `
+        -define "IconPath=$icon" `
         -ext WixToolset.UI.wixext `
         -arch x64 `
         -out $msi

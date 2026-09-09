@@ -51,3 +51,25 @@ occasion. Beyond that:
 Give the output a `.raw` extension instead and you get the raw dump the render
 tests compare against: `u32` width, `u32` height, then `width × height` RGBA
 pixels, tightly packed. `.png` is chosen on the extension and nothing else.
+
+## The icon
+
+The application icon is generated too, for the same reason and by the same
+kind of command:
+
+```
+cargo run -p aitch-ui --release --example make_icon -- \
+    packaging/windows/aitch.ico [preview.png]
+```
+
+It takes its three colours from `Theme::dark` — the tile is what the footer
+sits on, the H is the cursor's blue, the two bars are a key cap's — so it
+cannot drift away from the editor it stands for. There is no font involved:
+the H is three rectangles, which is why it stays crisp at 16 px where a shaped
+glyph would turn to mush. Everything is drawn at 4× and averaged down, and
+that is where the rounded corners get their edges.
+
+Sizes below 64 px are stored in the `.ico` as uncompressed DIBs and the rest
+as PNGs. Modern Windows reads PNG entries at every size, but GDI+ reads none
+of them, and the small sizes are both where the old APIs look and where a DIB
+costs nothing.

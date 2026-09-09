@@ -1,0 +1,273 @@
+//! Draw the application icon and write it as a Windows `.ico`.
+//!
+//! Generated rather than drawn by hand, for the same reason the README
+//! screenshots are (`docs/screenshots.md`): it takes its colours from
+//! [`Theme::dark`], so it cannot drift away from the editor it stands for, and
+//! regenerating it is one command rather than an afternoon in an editor
+//! nobody has installed.
+//!
+//! ```text
+//! cargo run -p aitch-ui --release --example make_icon -- packaging/windows/aitch.ico
+//! ```
+//!
+//! Pass a second path to also write a 256px PNG, for anywhere that wants one.
+//!
+//! The shapes are rectangles and one rounded corner radius, so there is no
+//! font to find and no glyph to shape: an `H` over the two footer rows, which
+//! is the one thing about this editor you can see from across a room. Every
+//! size is rendered at 4× and boxed down, which is where the smooth edges come
+//! from.
+
+use std::io::Write;
+
+use aitch_ui::theme::{Color, Theme};
+
+/// Sizes Windows asks for. 16 and 32 are the ones anyone actually sees; 256
+/// is what Explorer's largest view uses.
+const SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
+
+/// Supersampling factor. Everything is drawn with hard edges at this
+/// multiple and averaged down, which anti-aliases the rounded corners and the
+/// stems of the H without any of them knowing about it.
+const SS: u32 = 4;
+
+/// A rectangle in 0..1 of the icon's side, top-left origin.
+struct Rect {
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+}
+
+impl Rect {
+    const fn new(x0: f32, y0: f32, x1: f32, y1: f32) -> Rect {
+        Rect { x0, y0, x1, y1 }
+    }
+
+    fn contains(&self, x: f32, y: f32) -> bool {
+        x >= self.x0 && x < self.x1 && y >= self.y0 && y < self.y1
+    }
+}
+
+/// The two stems and the crossbar of the H, then the two footer rows.
+const LEFT_STEM: Rect = Rect::new(0.28, 0.17, 0.40, 0.62);
+const RIGHT_STEM: Rect = Rect::new(0.60, 0.17, 0.72, 0.62);
+const CROSSBAR: Rect = Rect::new(0.28, 0.355, 0.72, 0.435);
+/// The second row is shorter than the first, the way the real footer's is
+/// when the last entry does not fill the width.
+const FOOTER_TOP: Rect = Rect::new(0.22, 0.70, 0.78, 0.775);
+const FOOTER_BOTTOM: Rect = Rect::new(0.22, 0.815, 0.63, 0.89);
+
+/// Corner radius of the tile, as a fraction of its side.
+const RADIUS: f32 = 0.22;
+
+fn main() {
+    let mut args = std::env::args().skip(1);
+    let Some(ico_path) = args.next() else {
+        eprintln!("usage: make_icon <output.ico> [preview.png]");
+        std::process::exit(2);
+    };
+    let png_path = args.next();
+
+    let theme = Theme::dark();
+    // The tile is the colour the footer and status line sit on, so the icon is
+    // the editor's chrome rather than an unrelated blue square. The H is the
+    // cursor's colour and the footer rows are a key cap's.
+    let tile = to_srgb(theme.chrome_background);
+    let letter = to_srgb(theme.cursor);
+    let rows = to_srgb(theme.key_background);
+
+    let mut entries = Vec::new();
+    for size in SIZES {
+        let pixels = render(size, tile, letter, rows);
+
+        if size == 256 {
+            if let Some(path) = &png_path {
+                std::fs::write(path, encode_png(size, &pixels)).expect("could not write the PNG");
+                eprintln!("wrote {path}");
+            }
+        }
+
+        let image = if size < DIB_BELOW {
+            encode_dib(size, &pixels)
+        } else {
+            encode_png(size, &pixels)
+        };
+        entries.push((size, image));
+    }
+
+    std::fs::write(&ico_path, encode_ico(&entries)).expect("could not write the icon");
+    let bytes: usize = entries.iter().map(|(_, image)| image.len()).sum();
+    eprintln!(
+        "wrote {ico_path} ({} sizes, {bytes} bytes of image data)",
+        entries.len()
+    );
+}
+
+/// One icon at `size`, as tightly packed RGBA.
+fn render(size: u32, tile: [u8; 3], letter: [u8; 3], rows: [u8; 3]) -> Vec<u8> {
+    let hi = size * SS;
+    let samples = SS * SS;
+    let mut out = Vec::with_capacity((size * size * 4) as usize);
+
+    for y in 0..size {
+        for x in 0..size {
+            // Accumulate the supersamples of this pixel. Everything outside
+            // the tile is transparent, so alpha is averaged along with the
+            // colour and the rounded corners come out soft.
+            let (mut r, mut g, mut b, mut a) = (0u32, 0u32, 0u32, 0u32);
+            for sy in 0..SS {
+                for sx in 0..SS {
+                    let px = x * SS + sx;
+                    let py = y * SS + sy;
+                    let u = (px as f32 + 0.5) / hi as f32;
+                    let v = (py as f32 + 0.5) / hi as f32;
+
+                    if !in_tile(u, v) {
+                        continue;
+                    }
+                    let colour = if LEFT_STEM.contains(u, v)
+                        || RIGHT_STEM.contains(u, v)
+                        || CROSSBAR.contains(u, v)
+                    {
+                        letter
+                    } else if FOOTER_TOP.contains(u, v) || FOOTER_BOTTOM.contains(u, v) {
+                        rows
+                    } else {
+                        tile
+                    };
+                    r += colour[0] as u32;
+                    g += colour[1] as u32;
+                    b += colour[2] as u32;
+                    a += 255;
+                }
+            }
+
+            // Averaged over every sample, not just the covered ones: a pixel
+            // half off the corner is half as opaque, which is the point.
+            out.push((r / samples) as u8);
+            out.push((g / samples) as u8);
+            out.push((b / samples) as u8);
+            out.push((a / samples) as u8);
+        }
+    }
+    out
+}
+
+/// Whether a point is inside the rounded square.
+fn in_tile(u: f32, v: f32) -> bool {
+    // Distance from the nearest corner's centre, but only in the corner
+    // quadrants; everywhere else the square's own edges decide.
+    let cx = u.clamp(RADIUS, 1.0 - RADIUS);
+    let cy = v.clamp(RADIUS, 1.0 - RADIUS);
+    let (dx, dy) = (u - cx, v - cy);
+    dx * dx + dy * dy <= RADIUS * RADIUS
+}
+
+/// A theme colour back to 8-bit sRGB. [`Color`] holds linear values, because
+/// the surface is configured with an sRGB format and a clear value has to be
+/// linear; a PNG wants the other end of that conversion.
+fn to_srgb(colour: Color) -> [u8; 3] {
+    fn channel(linear: f64) -> u8 {
+        let c = if linear <= 0.003_130_8 {
+            linear * 12.92
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        };
+        (c.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+    [channel(colour.r), channel(colour.g), channel(colour.b)]
+}
+
+fn encode_png(size: u32, pixels: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, size, size);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .write_header()
+        .expect("a PNG header")
+        .write_image_data(pixels)
+        .expect("PNG data");
+    out
+}
+
+/// One icon entry as an uncompressed 32-bit DIB, the original icon format.
+///
+/// A `BITMAPINFOHEADER` with twice the real height — the header describes the
+/// colour image and the 1-bit mask below it as one bitmap — then bottom-up
+/// BGRA rows, then the mask. The mask is left all zeros: with an alpha channel
+/// present Windows composites on that instead, and a mask of "nothing is
+/// transparent" is what every icon with alpha carries.
+fn encode_dib(size: u32, pixels: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&40u32.to_le_bytes()); // biSize
+    out.extend_from_slice(&(size as i32).to_le_bytes()); // biWidth
+    out.extend_from_slice(&((size * 2) as i32).to_le_bytes()); // biHeight
+    out.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
+    out.extend_from_slice(&32u16.to_le_bytes()); // biBitCount
+    out.extend_from_slice(&0u32.to_le_bytes()); // biCompression = BI_RGB
+    out.extend_from_slice(&(size * size * 4).to_le_bytes()); // biSizeImage
+    out.extend_from_slice(&0i32.to_le_bytes()); // biXPelsPerMeter
+    out.extend_from_slice(&0i32.to_le_bytes()); // biYPelsPerMeter
+    out.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed
+    out.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
+
+    // Bottom-up, and BGRA rather than RGBA.
+    for y in (0..size).rev() {
+        for x in 0..size {
+            let i = ((y * size + x) * 4) as usize;
+            out.push(pixels[i + 2]);
+            out.push(pixels[i + 1]);
+            out.push(pixels[i]);
+            out.push(pixels[i + 3]);
+        }
+    }
+
+    // The AND mask: one bit per pixel, each row padded to four bytes.
+    let row = size.div_ceil(8).next_multiple_of(4);
+    out.extend(std::iter::repeat_n(0u8, (row * size) as usize));
+    out
+}
+
+/// Below this, an entry is stored as an uncompressed DIB rather than a PNG.
+///
+/// Modern Windows reads PNG entries at any size, but GDI+ and anything else
+/// built on the old icon APIs read only the DIB ones — `System.Drawing.Icon`
+/// asked for 256 and handed back 128 when every entry here was a PNG. The
+/// small sizes are where those APIs look and where a DIB is cheap, so they are
+/// stored the old way and the large ones stay compressed; 256×256 as a DIB
+/// would be 256 KB on its own.
+const DIB_BELOW: u32 = 64;
+
+/// Pack the images into an `.ico`.
+fn encode_ico(entries: &[(u32, Vec<u8>)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    out.extend_from_slice(&1u16.to_le_bytes()); // 1 = icon, 2 = cursor
+    out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+
+    // The directory is fixed width, so every image offset is known before any
+    // of them is written.
+    let mut offset = 6 + 16 * entries.len() as u32;
+    for (size, png) in entries {
+        // 256 does not fit in a byte and is written as 0, which is the format
+        // saying "the largest size there is".
+        let dimension = if *size >= 256 { 0u8 } else { *size as u8 };
+        out.push(dimension); // width
+        out.push(dimension); // height
+        out.push(0); // colours in the palette; 0 for truecolour
+        out.push(0); // reserved
+        out.extend_from_slice(&1u16.to_le_bytes()); // colour planes
+        out.extend_from_slice(&32u16.to_le_bytes()); // bits per pixel
+        out.extend_from_slice(&(png.len() as u32).to_le_bytes());
+        out.extend_from_slice(&offset.to_le_bytes());
+        offset += png.len() as u32;
+    }
+    for (_, png) in entries {
+        out.extend_from_slice(png);
+    }
+
+    let _ = out.flush();
+    out
+}

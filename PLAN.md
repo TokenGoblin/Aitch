@@ -182,10 +182,32 @@ Nano has no equivalent, so this is invention. Keep it keyboard-first and keep it
 - Crash-safe recovery files.
 
 ### Phase 8 — Ship it
-- Windows: portable zip + a signed MSI if certs exist.
-- Linux: AppImage as primary, plus `.deb` and a Flatpak manifest.
-- Release CI on tags, with a static-linked Linux build to avoid glibc pain.
-- README with a screenshot of the footer. That screenshot is the whole pitch.
+
+**Status: done for Windows, and stopped there deliberately.**
+
+- ✅ Windows: portable zip + an MSI. Unsigned — there are no certificates.
+- ✅ Release CI on tags: tests in release profile, builds both artifacts,
+  unpacks the zip elsewhere and runs the binary out of it, checks the MSI
+  opens, then publishes.
+- ✅ README with screenshots of the footer, rendered by the editor itself
+  rather than captured ([`docs/screenshots.md`](docs/screenshots.md)). That
+  screenshot is the whole pitch.
+- ✅ An application icon, generated from the dark theme by the `make_icon`
+  example, on the Start menu shortcut and in Add/Remove Programs.
+- ❌ **Linux: not done.** No AppImage, no `.deb`, no Flatpak manifest. The
+  editor builds, tests and runs on Linux — CI does all three on every push,
+  against lavapipe — and `cargo install --path crates/aitch` works. Only the
+  packaging is missing.
+
+  Two things to know before picking this up. First, **"static-linked" is not
+  available**: winit, wgpu and cosmic-text `dlopen` their X11, Wayland and
+  Vulkan libraries at run time, and a statically linked musl binary cannot
+  `dlopen` at all. The achievable version is a dynamic build against the
+  oldest glibc worth supporting — build on the oldest runner image rather than
+  the newest — which is what the AppImage convention assumes anyway.
+  Second, an AppImage and a `.desktop` entry both need an icon, and there is
+  one now: `packaging/windows/aitch.ico`, or re-run `make_icon` for PNGs at
+  any size.
 
 ---
 
