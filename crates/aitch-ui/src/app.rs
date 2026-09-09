@@ -35,6 +35,8 @@ const WHEEL_LINES: f64 = 3.0;
 pub enum Wake {
     /// Something in the open folder changed on disk.
     FolderChanged,
+    /// A syntax parse finished and there is new colour to draw.
+    HighlightsReady,
 }
 
 /// Open a window on `workspace` and run until it closes.
@@ -56,6 +58,12 @@ pub fn run(workspace: Workspace) -> Result<(), Box<dyn Error>> {
             let _ = proxy.send_event(Wake::FolderChanged);
         });
     }
+
+    // Parsing happens on its own thread; this is how it says it has finished.
+    let proxy = event_loop.create_proxy();
+    app.editor.set_wake(move || {
+        let _ = proxy.send_event(Wake::HighlightsReady);
+    });
     event_loop.run_app(&mut app)?;
 
     match app.failure {
@@ -168,6 +176,7 @@ impl App {
         if (target - self.scroll).abs() > f64::EPSILON {
             self.scroll = target;
             self.viewport_from_scroll(line_height);
+            self.editor.view_moved();
             self.redraw();
         }
     }
@@ -246,6 +255,13 @@ impl ApplicationHandler<Wake> for App {
                 if self.editor.folder_changed().redraws() {
                     self.generation += 1;
                     self.refresh_title();
+                    self.redraw();
+                }
+            }
+            Wake::HighlightsReady => {
+                if self.editor.poll_highlights() {
+                    // Only the colours moved, so the shaped layout still
+                    // stands: no generation bump, just another pass.
                     self.redraw();
                 }
             }

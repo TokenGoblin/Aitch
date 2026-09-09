@@ -11,6 +11,26 @@ repository.workspace = true
 [dependencies]
 # All three are named in PLAN.md's stack table for this phase.
 ignore = "0.4"
+tree-sitter = "0.26"
+
+# The grammars PLAN.md Phase 5 asks for. Each is a C parser compiled at build
+# time; they are listed apart from the editor's own dependencies because they
+# are data more than code, and because the list will grow.
+tree-sitter-bash = "0.25"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-css = "0.25"
+tree-sitter-html = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-json = "0.24"
+tree-sitter-md = "0.5"
+tree-sitter-python = "0.25"
+tree-sitter-rust = "0.24"
+# tree-sitter-toml is stuck at 0.20, which predates the version-independent
+# LanguageFn export and so cannot be linked against a modern tree-sitter.
+tree-sitter-toml-ng = "0.7"
+tree-sitter-typescript = "0.23"
+tree-sitter-yaml = "0.7"
 notify = "8"
 nucleo = "0.5"
 ropey = { workspace = true }
@@ -18,6 +38,7 @@ serde = { workspace = true }
 toml = { workspace = true }
 
 [dev-dependencies]
+# The benches build ropes and tree-sitter edits directly.
 # Measurement only, for the PLAN.md §6 budgets. Not linked into the editor.
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 

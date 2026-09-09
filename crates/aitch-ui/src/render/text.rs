@@ -5,12 +5,16 @@
 //! window size rather than the file size — which is what lets a 50 MB log
 //! scroll at the same speed as a 50 line one.
 
-use aitch_core::{Buffer, Position};
+use aitch_core::{Buffer, Highlights, Position, ViewOptions};
 use cosmic_text::{Attrs, Family, FontSystem, Metrics, Shaping, SwashCache, Wrap};
 
 use crate::render::atlas::Atlas;
 use crate::render::quads::{Instances, Kind};
 use crate::theme::Theme;
+
+/// One visible line's whitespace marks: which line, where its top is, and the
+/// byte offset and x position of each glyph on it.
+type LineMarks = (usize, f32, Vec<(usize, f32)>);
 
 /// Line height as a multiple of the font size.
 const LINE_HEIGHT_RATIO: f32 = 1.4;
@@ -42,6 +46,8 @@ pub struct TextRenderer {
     /// The lines currently in `layout`, so byte offsets can be mapped back.
     visible: Vec<String>,
     first_line: usize,
+    /// Width of the text area in physical pixels, for full-width bands.
+    width: f32,
     shaped: Option<ShapeKey>,
 }
 
@@ -70,6 +76,7 @@ impl TextRenderer {
             cell_width,
             visible: Vec::new(),
             first_line: 0,
+            width: 0.0,
             shaped: None,
         }
     }
@@ -125,6 +132,7 @@ impl TextRenderer {
             return;
         }
 
+        self.width = size.0;
         self.visible.clear();
         let last = (first_line + line_count).min(buffer.len_lines());
         for line in first_line..last {
@@ -173,10 +181,48 @@ impl TextRenderer {
         offset: (f32, f32),
         theme: &Theme,
     ) {
+        self.push_document(
+            queue,
+            atlas,
+            instances,
+            buffer,
+            offset,
+            theme,
+            None,
+            aitch_core::ViewOptions::default(),
+            None,
+        );
+    }
+
+    /// Draw the document, colouring each run by its syntax token.
+    ///
+    /// `highlights` may describe a slightly older version of the text — it is
+    /// produced off this thread on purpose. Byte offsets from a stale parse
+    /// can land anywhere, so a token is looked up per glyph and a miss simply
+    /// means the default colour rather than a wrong one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_document(
+        &mut self,
+        queue: &wgpu::Queue,
+        atlas: &mut Atlas,
+        instances: &mut Instances,
+        buffer: &Buffer,
+        offset: (f32, f32),
+        theme: &Theme,
+        highlights: Option<&Highlights>,
+        view: ViewOptions,
+        brackets: Option<(usize, usize)>,
+    ) {
         let (x_offset, y_offset) = offset;
+        self.push_current_line(instances, atlas.white(), buffer, offset, theme);
         self.push_selection(instances, atlas.white(), buffer, offset, theme);
+        self.push_brackets(instances, atlas.white(), buffer, offset, theme, brackets);
 
         // Split the borrow so the atlas can rasterize while the layout is read.
+        let first_line = self.first_line;
+        // Whitespace markers are gathered here and drawn after, because
+        // drawing them needs the shaping buffer that this loop is holding.
+        let mut marks: Vec<LineMarks> = Vec::new();
         let TextRenderer {
             font_system,
             swash,
@@ -186,10 +232,25 @@ impl TextRenderer {
 
         for run in layout.layout_runs() {
             let baseline = run.line_y + y_offset;
+            // Where this visible line starts in the document, so a glyph's
+            // offset within the line can be turned into a document offset.
+            let line_start = first_line
+                .checked_add(run.line_i)
+                .filter(|line| *line < buffer.len_lines())
+                .map(|line| buffer.text().line_to_byte(line));
+
             for glyph in run.glyphs {
                 let physical = glyph.physical((0.0, 0.0), 1.0);
                 let Some(entry) = atlas.glyph(queue, font_system, swash, physical.cache_key) else {
                     continue;
+                };
+
+                let color = match (highlights, line_start) {
+                    (Some(highlights), Some(start)) => highlights
+                        .token_at(start + glyph.start)
+                        .map(|token| theme.color_for(token))
+                        .unwrap_or(theme.foreground),
+                    _ => theme.foreground,
                 };
 
                 let position = [
@@ -197,11 +258,137 @@ impl TextRenderer {
                     baseline + physical.y as f32 + entry.offset[1],
                 ];
                 let kind = if entry.color { Kind::Color } else { Kind::Mask };
-                instances.push(position, entry, theme.foreground, kind);
+                instances.push(position, entry, color, kind);
+            }
+
+            if view.whitespace {
+                marks.push((
+                    run.line_i,
+                    run.line_top,
+                    run.glyphs.iter().map(|g| (g.start, g.x)).collect(),
+                ));
             }
         }
 
+        if view.whitespace {
+            self.push_whitespace(queue, atlas, instances, &marks, offset, theme);
+        }
+
         self.push_cursor(instances, atlas.white(), buffer, offset, theme);
+    }
+
+    /// Dim markers where tabs and trailing spaces are.
+    ///
+    /// Only trailing spaces: marking every space between words would make
+    /// prose unreadable, and the ones that matter are the ones you cannot see.
+    fn push_whitespace(
+        &mut self,
+        queue: &wgpu::Queue,
+        atlas: &mut Atlas,
+        instances: &mut Instances,
+        marks: &[LineMarks],
+        offset: (f32, f32),
+        theme: &Theme,
+    ) {
+        for (line_index, line_top, glyphs) in marks {
+            let Some(line) = self.visible.get(*line_index).cloned() else {
+                continue;
+            };
+            let trailing_from = line.trim_end().len();
+
+            for (byte, x) in glyphs {
+                let Some(c) = line[*byte..].chars().next() else {
+                    continue;
+                };
+                let marker = match c {
+                    '\t' => "\u{2192}",
+                    ' ' if *byte >= trailing_from => "\u{00b7}",
+                    _ => continue,
+                };
+                self.push_line(
+                    queue,
+                    atlas,
+                    instances,
+                    marker,
+                    (offset.0 + x, line_top + offset.1),
+                    theme.whitespace,
+                );
+            }
+        }
+    }
+
+    /// A box behind a bracket and its partner.
+    fn push_brackets(
+        &self,
+        instances: &mut Instances,
+        white: crate::render::atlas::Entry,
+        buffer: &Buffer,
+        offset: (f32, f32),
+        theme: &Theme,
+        brackets: Option<(usize, usize)>,
+    ) {
+        let Some((first, second)) = brackets else {
+            return;
+        };
+        for at in [first, second] {
+            let position = buffer.char_to_position(at);
+            let Some(row) = position.line.checked_sub(self.first_line) else {
+                continue;
+            };
+            let Some(text) = self.visible.get(row) else {
+                continue;
+            };
+            let Some(run) = self.layout.layout_runs().find(|run| run.line_i == row) else {
+                continue;
+            };
+
+            let byte = char_to_byte(text, position.column);
+            let x = run
+                .glyphs
+                .iter()
+                .find(|glyph| byte >= glyph.start && byte < glyph.end)
+                .map(|glyph| glyph.x)
+                .unwrap_or(run.line_w);
+
+            instances.push_rect(
+                [offset.0 + x, run.line_top + offset.1],
+                [self.cell_width, self.line_height()],
+                white,
+                theme.bracket_match,
+            );
+        }
+    }
+
+    /// A faint band behind the line the cursor is on.
+    ///
+    /// Drawn under everything else, including the selection, so that a
+    /// selected current line still reads as selected.
+    fn push_current_line(
+        &self,
+        instances: &mut Instances,
+        white: crate::render::atlas::Entry,
+        buffer: &Buffer,
+        offset: (f32, f32),
+        theme: &Theme,
+    ) {
+        // A selection makes the current line obvious already, and two washes
+        // stacked on one line just muddies both.
+        if buffer.has_selection() {
+            return;
+        }
+        let Some(row) = buffer.cursor().line.checked_sub(self.first_line) else {
+            return;
+        };
+        let Some(run) = self.layout.layout_runs().find(|run| run.line_i == row) else {
+            return;
+        };
+
+        instances.push_rect(
+            [0.0, run.line_top + offset.1],
+            [self.width, self.line_height()],
+            white,
+            theme.current_line,
+        );
     }
 
     /// Draw the selection behind the text, one band per visible line.

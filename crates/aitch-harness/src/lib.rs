@@ -94,6 +94,11 @@ impl Harness {
 
     // -- what a user would see ---------------------------------------------
 
+    /// Which keymap profile is active, for test messages.
+    pub fn keymap_profile(&self) -> String {
+        self.editor.keymap().profile().to_string()
+    }
+
     pub fn editor(&self) -> &Editor {
         &self.editor
     }

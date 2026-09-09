@@ -362,6 +362,17 @@ chords = ["Ctrl+Shift+End"]
 command = "select"
 arg = "move-buffer-end"
 
+# nano puts the line-number toggle on M-N and whitespace on M-P.
+[[binding]]
+context = "editor"
+chords = ["M-N"]
+command = "toggle-line-numbers"
+
+[[binding]]
+context = "editor"
+chords = ["M-P"]
+command = "toggle-whitespace"
+
 # ---------------------------------------------------------------- prompt ----
 
 [[binding]]

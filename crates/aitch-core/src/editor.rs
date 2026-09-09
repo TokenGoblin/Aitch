@@ -11,16 +11,19 @@
 //! the status line and prompt beyond reach of the harness.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::buffer::{Applied, Buffer, Position, Viewport};
 use crate::command::Command;
 use crate::document::Document;
 use crate::fileio;
 use crate::footer::{self, Footer};
+use crate::highlighter::{Highlights, SyntaxThread};
 use crate::keymap::{Context, Keymap};
 use crate::project::{PathIndex, Tree};
 use crate::prompt::{self, Answer, Histories, Kind, Prompt};
 use crate::search::{self, Direction, Match, Query};
+use crate::syntax::Language;
 use crate::workspace::Workspace;
 
 /// What the caller must do after a command.
@@ -47,9 +50,26 @@ impl Outcome {
     }
 }
 
+/// How far to look for a bracket's partner, in characters. Far enough for any
+/// function worth reading; near enough that a 50 MB log cannot stall a frame.
+const BRACKET_SEARCH_LIMIT: usize = 100_000;
+
+/// How many screens either side of the visible one to highlight, so a small
+/// scroll does not outrun the colour.
+const HIGHLIGHT_MARGIN_SCREENS: usize = 2;
+
 /// How many quick-open hits to show. More than fits above the prompt line is
 /// wasted work, and the ranking means the answer is near the top or not there.
 const RESULT_LIMIT: usize = 50;
+
+/// What the view draws besides the text.
+///
+/// Phase 7's `aitchrc` will set the defaults; these are the toggles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ViewOptions {
+    pub line_numbers: bool,
+    pub whitespace: bool,
+}
 
 /// The help pane: a scrollable list of lines, not a dialog.
 #[derive(Debug, Clone, Default)]
@@ -78,6 +98,15 @@ pub struct Editor {
     /// The list shown above the prompt line, and which row is picked.
     results: Vec<String>,
     result: usize,
+    /// Parses the active buffer off this thread. `None` for a file whose
+    /// language Aitch has no grammar for, which simply shows uncoloured.
+    syntax: Option<SyntaxThread>,
+    /// What the view shows beyond the text itself.
+    view: ViewOptions,
+    /// Wakes the event loop when a parse finishes. The core cannot know how,
+    /// so the UI supplies it; without one, colour still arrives, just not
+    /// until something else causes a redraw.
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
     quitting: bool,
 }
 
@@ -102,6 +131,9 @@ impl Editor {
             index: None,
             results: Vec::new(),
             result: 0,
+            syntax: None,
+            view: ViewOptions::default(),
+            wake: None,
             quitting: false,
         }
     }
@@ -160,6 +192,127 @@ impl Editor {
     /// The sidebar, when it is showing.
     pub fn tree(&self) -> Option<&Tree> {
         self.tree.as_ref()
+    }
+
+    /// How the visible text should be coloured. Empty until a parse lands,
+    /// and possibly a keystroke behind — which is the point of it being off
+    /// the drawing thread.
+    pub fn highlights(&self) -> Option<&Highlights> {
+        self.syntax.as_ref().map(SyntaxThread::highlights)
+    }
+
+    /// What the view is showing beyond the text.
+    pub fn view(&self) -> ViewOptions {
+        self.view
+    }
+
+    /// The bracket under or just before the cursor, and its partner.
+    ///
+    /// Returns character indices. Brackets inside strings and comments are
+    /// skipped, which is what the syntax tree is for — without it, a brace in
+    /// a string sends the search off after a partner that is not there.
+    pub fn bracket_pair(&self) -> Option<(usize, usize)> {
+        let buffer = &self.workspace.active().buffer;
+        let text = buffer.text();
+        let cursor = buffer.cursor_char();
+
+        // Under the cursor first, then just behind it, which is where it
+        // feels like the bracket is after typing one.
+        let at = [cursor, cursor.checked_sub(1)?]
+            .into_iter()
+            .find(|index| *index < text.len_chars() && bracket_of(text.char(*index)).is_some())?;
+
+        let (partner, forward) = bracket_of(text.char(at))?;
+        let opener = text.char(at);
+
+        let mut depth = 0usize;
+        let mut index = at;
+        loop {
+            index = if forward {
+                index.checked_add(1).filter(|i| *i < text.len_chars())?
+            } else {
+                index.checked_sub(1)?
+            };
+            // A brace three thousand lines away is not a useful answer, and
+            // scanning a whole 50 MB log for one is not a useful frame.
+            if at.abs_diff(index) > BRACKET_SEARCH_LIMIT {
+                return None;
+            }
+            if self.is_in_text_or_comment(text, index) {
+                continue;
+            }
+
+            let c = text.char(index);
+            if c == opener {
+                depth += 1;
+            } else if c == partner {
+                if depth == 0 {
+                    return Some((at, index));
+                }
+                depth -= 1;
+            }
+        }
+    }
+
+    /// Whether a character sits inside a string or a comment, per the last
+    /// parse. Unparsed text is treated as code, which is the safe way round:
+    /// a missed skip finds no partner rather than a wrong one.
+    fn is_in_text_or_comment(&self, text: &ropey::Rope, char_index: usize) -> bool {
+        let Some(highlights) = self.highlights() else {
+            return false;
+        };
+        let byte = text.char_to_byte(char_index);
+        matches!(
+            highlights.token_at(byte),
+            Some(crate::syntax::Token::String) | Some(crate::syntax::Token::Comment)
+        )
+    }
+
+    /// The active buffer's language, if Aitch has a grammar for it.
+    pub fn language(&self) -> Option<Language> {
+        self.syntax.as_ref().map(SyntaxThread::language)
+    }
+
+    /// Say how to wake the event loop when a parse finishes, and start
+    /// highlighting the buffer that is already open.
+    pub fn set_wake<F>(&mut self, wake: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.wake = Some(Arc::new(wake));
+        self.start_highlighting();
+    }
+
+    /// Collect finished parses. True if the colours changed.
+    pub fn poll_highlights(&mut self) -> bool {
+        self.syntax.as_mut().is_some_and(SyntaxThread::poll)
+    }
+
+    /// Point the parser at whatever buffer is now active.
+    ///
+    /// A parser holds one language and one tree, so switching buffers means
+    /// starting again rather than reusing what is there.
+    fn start_highlighting(&mut self) {
+        let language = self.workspace.active().path().and_then(Language::from_path);
+
+        match language {
+            Some(language)
+                if self.syntax.as_ref().map(SyntaxThread::language) != Some(language) =>
+            {
+                let wake = self.wake.clone();
+                self.syntax = SyntaxThread::new(language, move || {
+                    if let Some(wake) = &wake {
+                        wake();
+                    }
+                });
+            }
+            Some(_) => {}
+            None => self.syntax = None,
+        }
+
+        // Whatever happened, the parser has seen none of this buffer.
+        self.workspace.active_mut().buffer.take_text_edits();
+        self.request_highlights(true);
     }
 
     /// The list above the prompt line: quick-open hits, or open buffers.
@@ -241,6 +394,45 @@ impl Editor {
         lines
     }
 
+    /// Ask for the visible range to be highlighted.
+    ///
+    /// A margin either side means scrolling a little does not run past the
+    /// coloured region before the next parse lands.
+    fn request_highlights(&mut self, whole_buffer: bool) {
+        if self.syntax.is_none() {
+            // Nothing to parse, but the buffer's pending edits must not pile
+            // up unbounded waiting for a parser that will never read them.
+            self.workspace.active_mut().buffer.take_text_edits();
+            return;
+        }
+
+        let range = {
+            let buffer = &self.workspace.active().buffer;
+            let text = buffer.text();
+            if whole_buffer {
+                0..text.len_bytes()
+            } else {
+                let margin = self.viewport.height_lines().max(1) * HIGHLIGHT_MARGIN_SCREENS;
+                let first = self.viewport.first_line().saturating_sub(margin);
+                let last =
+                    (self.viewport.last_line() + margin).min(buffer.len_lines().saturating_sub(1));
+                let start = text.line_to_byte(first);
+                let end = if last + 1 >= buffer.len_lines() {
+                    text.len_bytes()
+                } else {
+                    text.line_to_byte(last + 1)
+                };
+                start..end
+            }
+        };
+
+        let edits = self.workspace.active_mut().buffer.take_text_edits();
+        let text = self.workspace.active().buffer.text().clone();
+        if let Some(syntax) = self.syntax.as_mut() {
+            syntax.request(&text, edits, range);
+        }
+    }
+
     // -- running commands --------------------------------------------------
 
     /// Run one command and report what the caller must do about it.
@@ -256,10 +448,22 @@ impl Editor {
             _ => self.run_in_editor(command),
         };
 
+        // Anything that moved the text or the window needs colour for what
+        // is on screen now.
+        if outcome.redraws() {
+            self.request_highlights(false);
+        }
+
         match (outcome, had_status) {
             (Outcome::Nothing, true) => Outcome::Redraw,
             (outcome, _) => outcome,
         }
+    }
+
+    /// The window scrolled without a command — a wheel, a drag. Colour has to
+    /// follow it.
+    pub fn view_moved(&mut self) {
+        self.request_highlights(false);
     }
 
     fn run_in_editor(&mut self, command: &Command) -> Outcome {
@@ -309,6 +513,15 @@ impl Editor {
             Command::NextBuffer => self.cycle_buffer(true),
             Command::PrevBuffer => self.cycle_buffer(false),
             Command::CloseBuffer => self.close_buffer(),
+
+            Command::ToggleLineNumbers => {
+                self.view.line_numbers = !self.view.line_numbers;
+                Outcome::Redraw
+            }
+            Command::ToggleWhitespace => {
+                self.view.whitespace = !self.view.whitespace;
+                Outcome::Redraw
+            }
 
             Command::Refresh => {
                 if let Some(tree) = self.tree.as_mut() {
@@ -658,6 +871,7 @@ impl Editor {
                 self.results.clear();
                 self.workspace.activate(picked);
                 self.follow_cursor();
+                self.start_highlighting();
                 Outcome::Redraw
             }
 
@@ -1047,6 +1261,7 @@ impl Editor {
             return Outcome::Redraw;
         }
         self.follow_cursor();
+        self.start_highlighting();
         let name = self.workspace.active().display_name();
         self.say(name);
         Outcome::Redraw
@@ -1072,6 +1287,7 @@ impl Editor {
                 self.context = Context::Editor;
                 self.close_prompt();
                 self.follow_cursor();
+                self.start_highlighting();
                 let name = self.workspace.active().display_name();
                 self.say(name);
                 Outcome::Redraw
@@ -1122,6 +1338,20 @@ impl Editor {
             .buffer
             .follow_cursor(&mut self.viewport);
     }
+}
+
+/// A bracket's partner, and which way to look for it.
+fn bracket_of(c: char) -> Option<(char, bool)> {
+    let pair = match c {
+        '(' => (')', true),
+        '[' => (']', true),
+        '{' => ('}', true),
+        ')' => ('(', false),
+        ']' => ('[', false),
+        '}' => ('{', false),
+        _ => return None,
+    };
+    Some(pair)
 }
 
 /// Move a scroll offset by a signed amount, clamped. True if it moved.

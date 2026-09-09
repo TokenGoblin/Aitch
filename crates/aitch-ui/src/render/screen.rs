@@ -21,6 +21,9 @@ pub const CHROME_ROWS: usize = 3;
 /// Width of the sidebar in character cells, when it is showing.
 pub const SIDEBAR_COLUMNS: usize = 28;
 
+/// Spaces between the line-number gutter and the text.
+pub const GUTTER_GAP: usize = 1;
+
 /// Most rows of quick-open results to show above the prompt line. Enough to
 /// choose from; not so many that the file being edited disappears.
 pub const RESULT_ROWS: usize = 8;
@@ -73,6 +76,8 @@ pub fn draw(
     } else {
         0.0
     };
+    let gutter = gutter_columns(editor);
+    let gutter_width = gutter as f32 * cell;
     let result_rows = editor.results().len().min(RESULT_ROWS);
     let document_rows = rows.saturating_sub(result_rows).max(1);
     let text_height = document_rows as f32 * line_height;
@@ -94,17 +99,36 @@ pub fn draw(
             text.prepare(
                 buffer,
                 first_line,
-                (text_width, text_height),
+                (text_width - gutter_width, text_height),
                 layout.generation,
             );
-            text.push_instances_at(
+            text.push_document(
                 queue,
                 atlas,
                 instances,
                 buffer,
-                (sidebar_width, -layout.sub_line_offset),
+                (sidebar_width + gutter_width, -layout.sub_line_offset),
                 theme,
+                editor.highlights(),
+                editor.view(),
+                editor.bracket_pair(),
             );
+
+            if gutter > 0 {
+                draw_gutter(
+                    queue,
+                    atlas,
+                    text,
+                    instances,
+                    editor,
+                    theme,
+                    line_height,
+                    document_rows,
+                    sidebar_width,
+                    gutter,
+                    layout.sub_line_offset,
+                );
+            }
 
             if sidebar_width > 0.0 {
                 draw_sidebar(
@@ -148,6 +172,56 @@ pub fn draw(
         line_height,
         rows,
     );
+}
+
+/// How wide the line-number gutter is, in character cells. Zero when off.
+///
+/// Wide enough for the largest line number in the file, so the text does not
+/// shift sideways when the count crosses a power of ten while scrolling.
+pub fn gutter_columns(editor: &Editor) -> usize {
+    if !editor.view().line_numbers {
+        return 0;
+    }
+    let digits = editor.buffer().len_lines().max(1).to_string().len();
+    digits + GUTTER_GAP + 1
+}
+
+/// Line numbers down the left of the text.
+#[allow(clippy::too_many_arguments)]
+fn draw_gutter(
+    queue: &wgpu::Queue,
+    atlas: &mut Atlas,
+    text: &mut TextRenderer,
+    instances: &mut Instances,
+    editor: &Editor,
+    theme: &Theme,
+    line_height: f32,
+    rows: usize,
+    sidebar_width: f32,
+    gutter: usize,
+    sub_line_offset: f32,
+) {
+    let first = editor.viewport().first_line();
+    let total = editor.buffer().len_lines();
+    let cursor_line = editor.buffer().cursor().line;
+    let width = gutter.saturating_sub(GUTTER_GAP);
+
+    for row in 0..=rows {
+        let line = first + row;
+        if line >= total {
+            break;
+        }
+        let y = row as f32 * line_height - sub_line_offset;
+        // The cursor's own number is drawn in the text colour, which is how
+        // every editor answers "which line am I on" without a second glance.
+        let color = if line == cursor_line {
+            theme.foreground
+        } else {
+            theme.line_number
+        };
+        let label = format!("{:>width$}", line + 1, width = width);
+        text.push_line(queue, atlas, instances, &label, (sidebar_width, y), color);
+    }
 }
 
 /// The file tree down the left-hand side.

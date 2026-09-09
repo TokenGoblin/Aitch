@@ -76,6 +76,10 @@ pub enum Command {
     CursorPosition,
     Help,
     Refresh,
+    /// Show or hide the line-number gutter.
+    ToggleLineNumbers,
+    /// Show or hide tabs and trailing spaces.
+    ToggleWhitespace,
 
     // -- Prompt context (Phase 3) ------------------------------------------
     PromptAccept,
@@ -146,6 +150,8 @@ impl Command {
             CursorPosition => "cursor-position",
             Help => "help",
             Refresh => "refresh",
+            ToggleLineNumbers => "toggle-line-numbers",
+            ToggleWhitespace => "toggle-whitespace",
             PromptAccept => "prompt-accept",
             PromptCancel => "prompt-cancel",
             PromptHistoryPrev => "prompt-history-prev",
@@ -259,6 +265,8 @@ impl Command {
             "cursor-position" => CursorPosition,
             "help" => Help,
             "refresh" => Refresh,
+            "toggle-line-numbers" => ToggleLineNumbers,
+            "toggle-whitespace" => ToggleWhitespace,
             "prompt-accept" => PromptAccept,
             "prompt-cancel" => PromptCancel,
             "prompt-history-prev" => PromptHistoryPrev,

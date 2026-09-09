@@ -4,6 +4,64 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Phase 5 — Syntax highlighting
+
+Added:
+
+- tree-sitter parsing with incremental reparse, **off the UI thread**. The
+  editor hands the worker a rope snapshot — free, because a rope clone shares
+  its structure — and carries on drawing. Colour arrives when it arrives.
+- Grammars for all thirteen languages PLAN.md lists: Rust, C, C++, Python,
+  JavaScript, TypeScript, JSON, TOML, YAML, Markdown, shell, HTML and CSS.
+- Two complete themes, one dark and one light, with a test that every syntax
+  colour clears 3:1 contrast against its own background.
+- Bracket matching that skips brackets inside strings and comments, which is
+  what having a syntax tree is worth.
+- The current line, line numbers (`M-N`) and whitespace (`M-P`). Whitespace
+  marks tabs and *trailing* spaces only; marking every space makes prose
+  unreadable, and the ones that matter are the invisible ones.
+
+Measured, on a 10,000-line Rust file:
+
+| | measured | PLAN.md Phase 5 budget |
+|---|---|---|
+| **Keystroke cost on the UI thread** | **1.2 µs** | under 16 ms ✓ |
+| Reparse after a keystroke (worker) | 1.16 ms | keeps up with typing |
+| Query one screen of spans (worker) | 172 µs | |
+| First parse of the file (worker) | 70 ms | once, at open |
+
+The acceptance criterion is the first row. It is 1.2 µs rather than
+milliseconds because the frame never waits for a parse: the design decision
+carries the budget, not the speed of the parser.
+
+Decisions:
+
+- **Stale parses are dropped, not queued.** Typing faster than the parser runs
+  would otherwise build a backlog of answers about documents three keystrokes
+  old. The worker takes the newest request and discards the rest.
+- **The token set is deliberately small.** Grammars disagree about detail —
+  `@variable.parameter.builtin` in one, `@parameter` in another — so captures
+  are matched on their leading component. An unfamiliar refinement lands on the
+  general token rather than falling through to unstyled text.
+- Some grammars ship only what their language *adds* to another. C++'s query is
+  939 bytes of C++-isms that expect C's 1432 bytes underneath; alone it
+  highlights ordinary C++ not at all. Those are concatenated, which is what
+  `inherits:` means elsewhere in the tree-sitter world. TypeScript inherits
+  JavaScript the same way.
+- `tree-sitter-toml` is stuck at 0.20, before grammars exported a version-
+  independent `LanguageFn`, so it cannot link against a modern tree-sitter.
+  `tree-sitter-toml-ng` is used instead.
+
+Not done:
+
+- **Soft wrap**, deferred by agreement to its own phase. One buffer line is
+  still exactly one screen row, and the viewport, cursor movement, hit testing
+  and scrolling all rely on that; changing it is a redesign rather than a
+  toggle, and half-doing it would put the cursor in the wrong places.
+- Markdown highlights block structure only. Emphasis and links inside a
+  paragraph need the inline grammar as an injection.
+- Double-click word and triple-click line selection, still owed from Phase 2.
+
 ### Phase 4 — Folder mode
 
 nano has no equivalent, so this phase is invention. Kept keyboard-first and

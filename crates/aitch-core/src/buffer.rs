@@ -126,6 +126,29 @@ impl Viewport {
     }
 }
 
+/// A byte offset paired with its row and column, which is how a parser wants
+/// a position. Named because the pair of them reads as noise inline.
+type BytePoint = (usize, (usize, usize));
+
+/// A text change described in the units a parser wants: bytes and
+/// row/column points, before and after.
+///
+/// The editor's own [`Edit`] is in characters, because that is what a cursor
+/// and a rope work in. tree-sitter works in bytes and points, and needs both
+/// sides of the change to reuse a tree instead of reparsing the file. Working
+/// them out has to happen while both versions of the text are still to hand,
+/// which is here rather than anywhere later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextEdit {
+    pub start_byte: usize,
+    pub old_end_byte: usize,
+    pub new_end_byte: usize,
+    /// Row and byte column, as a parser counts them.
+    pub start_point: (usize, usize),
+    pub old_end_point: (usize, usize),
+    pub new_end_point: (usize, usize),
+}
+
 /// A cursor: where it is, and where it would like to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct Cursor {
@@ -155,6 +178,8 @@ pub struct Buffer {
     /// Whether the last command was also a cut, so consecutive cuts pile up
     /// into one cut buffer the way nano's do.
     cutting: bool,
+    /// Changes since the syntax parser last caught up, oldest first.
+    pending_edits: Vec<TextEdit>,
 }
 
 impl Buffer {
@@ -179,6 +204,7 @@ impl Buffer {
             line_ending,
             cut_buffer: String::new(),
             cutting: false,
+            pending_edits: Vec::new(),
         }
     }
 
@@ -609,10 +635,19 @@ impl Buffer {
         let Some(transaction) = self.history.undo() else {
             return false;
         };
-        edit::apply(&mut self.text, &transaction.edit.inverted());
+        let inverted = transaction.edit.inverted();
+        let before = (
+            self.point_at(inverted.at),
+            self.point_at(inverted.removed_end()),
+        );
+
+        edit::apply(&mut self.text, &inverted);
         self.anchor = None;
         self.cursor.char_index = transaction.cursor_before.min(self.text.len_chars());
         self.cursor.goal_column = None;
+        // The parser is told about an undo exactly as it is told about a
+        // typed character; to it they are the same kind of change.
+        self.note_edit(before);
         true
     }
 
@@ -620,10 +655,16 @@ impl Buffer {
         let Some(transaction) = self.history.redo() else {
             return false;
         };
+        let before = (
+            self.point_at(transaction.edit.at),
+            self.point_at(transaction.edit.removed_end()),
+        );
+
         edit::apply(&mut self.text, &transaction.edit);
         self.anchor = None;
         self.cursor.char_index = transaction.cursor_after.min(self.text.len_chars());
         self.cursor.goal_column = None;
+        self.note_edit(before);
         true
     }
 
@@ -643,18 +684,60 @@ impl Buffer {
         }
     }
 
+    /// Take the byte-level changes a syntax parser has not seen yet.
+    pub fn take_text_edits(&mut self) -> Vec<TextEdit> {
+        std::mem::take(&mut self.pending_edits)
+    }
+
+    /// Whether anything has changed since the parser last caught up.
+    pub fn has_pending_edits(&self) -> bool {
+        !self.pending_edits.is_empty()
+    }
+
+    /// Byte offset and row/column point of a character index.
+    fn point_at(&self, char_index: usize) -> BytePoint {
+        let byte = self
+            .text
+            .char_to_byte(char_index.min(self.text.len_chars()));
+        let row = self.text.byte_to_line(byte);
+        let column = byte - self.text.line_to_byte(row);
+        (byte, (row, column))
+    }
+
+    /// Note a change for the parser. Called with the old text still in place
+    /// for the first two points, and the new text for the third.
+    fn note_edit(&mut self, before: (BytePoint, BytePoint)) {
+        let ((start_byte, start_point), (old_end_byte, old_end_point)) = before;
+        // The cursor sits at the end of what was just inserted.
+        let (new_end_byte, new_end_point) = self.point_at(self.cursor.char_index);
+
+        self.pending_edits.push(TextEdit {
+            start_byte,
+            old_end_byte,
+            new_end_byte,
+            start_point,
+            old_end_point,
+            new_end_point,
+        });
+    }
+
     /// The one path from an [`Edit`] to the buffer: apply it, record it, and
     /// leave the cursor where the edit ends.
     fn apply_edit(&mut self, edit: Edit, kind: Kind, cursor_before: usize) -> bool {
         if edit.is_empty() {
             return false;
         }
+        // Both taken before the text moves, while these indices still mean
+        // what they say.
+        let before = (self.point_at(edit.at), self.point_at(edit.removed_end()));
+
         let cursor_after = edit.end();
         edit::apply(&mut self.text, &edit);
         self.history.record(edit, kind, cursor_before, cursor_after);
         self.cursor.char_index = cursor_after;
         self.cursor.goal_column = None;
         self.anchor = None;
+        self.note_edit(before);
         true
     }
 

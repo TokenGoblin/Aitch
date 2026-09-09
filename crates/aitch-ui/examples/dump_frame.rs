@@ -80,6 +80,10 @@ fn main() {
     let rows = screen::text_rows(&text, H as f32);
     editor.viewport_mut().set_height_lines(rows);
 
+    // Parsing is on its own thread, so a one-shot dump has to wait for it.
+    // The real editor never waits: it draws and redraws when colour lands.
+    editor.set_wake(|| {});
+
     for chord in chords.split_whitespace() {
         let parsed = Chord::parse(chord).expect("a valid chord");
         let context = editor.context();
@@ -92,6 +96,15 @@ fn main() {
                 editor.run(&Command::InsertText(chord.to_string()));
             }
         }
+    }
+
+    // Give the parser a moment to answer before drawing the one frame.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if editor.poll_highlights() && editor.highlights().is_some_and(|h| !h.spans.is_empty()) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
     screen::draw(
