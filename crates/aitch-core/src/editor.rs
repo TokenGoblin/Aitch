@@ -539,6 +539,18 @@ impl Editor {
         self.result
     }
 
+    /// Whether the project search has walked the whole tree, or `true` when
+    /// there is no search running.
+    ///
+    /// The status line phrases this for people; a test needs the fact. Once
+    /// this is true every batch the walk produced is already in the channel,
+    /// so one more [`Editor::poll_search`] collects all of it — which is what
+    /// makes "wait for the search to finish" something a test can actually do
+    /// rather than approximate by watching the count stop moving.
+    pub fn search_is_finished(&self) -> bool {
+        self.finder.as_ref().is_none_or(ProjectSearch::is_finished)
+    }
+
     pub fn should_quit(&self) -> bool {
         self.quitting
     }
@@ -920,6 +932,11 @@ impl Editor {
             return self.open_prompt(Kind::ProjectReplaceWith { find });
         }
 
+        // Whether all that happened was the selection moving through the list
+        // above the prompt. That redraws, but it is not a change to what was
+        // typed, and the work below keys off what was typed.
+        let mut selection_only = false;
+
         let changed = match command {
             Command::PromptAccept => return self.accept(),
             Command::PromptCancel => return self.cancel(),
@@ -938,11 +955,13 @@ impl Editor {
             // With a list on screen the arrows move through it. Past answers
             // are the obvious meaning only when there is nothing to pick from.
             Command::PromptHistoryPrev if prompt.kind.has_results() => {
+                selection_only = true;
                 let moved = self.result > 0;
                 self.result = self.result.saturating_sub(1);
                 moved
             }
             Command::PromptHistoryNext if prompt.kind.has_results() => {
+                selection_only = true;
                 let last = self.results.len().saturating_sub(1);
                 let moved = self.result < last;
                 self.result = (self.result + 1).min(last);
@@ -974,24 +993,31 @@ impl Editor {
         };
 
         if changed {
-            // An incremental search follows along as the term is typed.
-            if self
-                .prompt
-                .as_ref()
-                .is_some_and(|p| p.kind.is_incremental())
-            {
-                self.search_from_prompt();
-            }
-            // Typing into a project search abandons the old one and starts
-            // again, which is what makes it feel like search rather than
-            // like waiting for a build.
-            let searching = self
-                .prompt
-                .as_ref()
-                .filter(|p| p.kind == Kind::ProjectSearch)
-                .map(|p| p.input().to_string());
-            if let Some(pattern) = searching {
-                self.restart_project_search(&pattern);
+            // Both of these answer a change to the text, so neither has
+            // anything to do when the arrows only moved the selection. Running
+            // them anyway threw away the hits being walked through: the list
+            // emptied, the selection was clamped back to the top of it, and
+            // every match but the first became unreachable.
+            if !selection_only {
+                // An incremental search follows along as the term is typed.
+                if self
+                    .prompt
+                    .as_ref()
+                    .is_some_and(|p| p.kind.is_incremental())
+                {
+                    self.search_from_prompt();
+                }
+                // Typing into a project search abandons the old one and starts
+                // again, which is what makes it feel like search rather than
+                // like waiting for a build.
+                let searching = self
+                    .prompt
+                    .as_ref()
+                    .filter(|p| p.kind == Kind::ProjectSearch)
+                    .map(|p| p.input().to_string());
+                if let Some(pattern) = searching {
+                    self.restart_project_search(&pattern);
+                }
             }
 
             if self.prompt.as_ref().is_some_and(|p| p.kind.has_results()) {

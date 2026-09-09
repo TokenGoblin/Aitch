@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every project-search hit but the first was unreachable.** Pressing Down to
+  move through the results restarted the search underneath them: the hits were
+  thrown away, the selection was clamped back to the top of a list that no
+  longer had anything in it, and `Enter` then said "nothing to open". Typing
+  into a project search is supposed to abandon the old search and start again
+  — that is what makes it feel like search rather than like waiting for a
+  build — but the arrows share the code path that notices the prompt changed,
+  and moving the selection is not a change to the pattern.
+
+  It survived Phase 6 because the one test that pressed Down only did so when
+  the walker happened to return `src/lib.rs` before `src/main.rs`, which on
+  this machine is about one run in ten. It showed up as a flaky test; it was
+  a broken feature.
+
 ### Documentation
 
 - **Screenshots in the README**, which PLAN.md Phase 8 calls the whole pitch:

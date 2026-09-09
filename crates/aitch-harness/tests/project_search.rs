@@ -60,27 +60,27 @@ fn project(name: &str) -> (Scratch, Harness) {
 ///
 /// Not just the first hit: the walker runs on several threads, so a test that
 /// counted or indexed results the moment one arrived would race the rest of
-/// them. Waiting for the count to stop moving is what makes that
-/// deterministic.
+/// them.
+///
+/// This waits for the walk to report itself finished rather than for the
+/// result count to stop moving. Quiescence is a guess, and on a machine busy
+/// enough to starve a walker thread for longer than the quiet period it is the
+/// wrong guess — the test indexes a list that is still growing. The finished
+/// flag is set after the walk ends, by which point every batch is already in
+/// the channel, so the poll after it collects the rest.
 fn settle(h: &mut Harness) {
     let start = Instant::now();
-    let mut steady = 0;
-    let mut last = usize::MAX;
     while start.elapsed() < Duration::from_secs(10) {
         h.editor_mut().poll_search();
-        let now = h.results().len();
-        if now > 0 && now == last {
-            steady += 1;
-            // Three quiet polls in a row: everything that is coming is here.
-            if steady == 3 {
-                return;
-            }
-        } else {
-            steady = 0;
+        if h.editor().search_is_finished() {
+            // Everything the walk produced is in the channel by now; this
+            // takes delivery of whatever the poll above was too early for.
+            h.editor_mut().poll_search();
+            return;
         }
-        last = now;
-        std::thread::sleep(Duration::from_millis(30));
+        std::thread::sleep(Duration::from_millis(5));
     }
+    panic!("the search had not finished after 10s");
 }
 
 #[test]
@@ -142,6 +142,39 @@ fn enter_jumps_to_the_matching_line() {
     assert_eq!(h.editor().document().display_name(), "main.rs");
     assert_eq!(h.cursor().line, 1, "line 2, zero-based");
     assert_eq!(h.context(), Context::Editor);
+}
+
+#[test]
+fn walking_the_results_does_not_restart_the_search() {
+    // Moving the selection is not a change to the pattern. Restarting the
+    // search on a keystroke is right when the pattern is being typed and
+    // wrong here: it threw the hits away, which put the selection back at the
+    // top of a list that no longer had anything in it, so every hit but the
+    // first was unreachable and Enter opened nothing.
+    let (_scratch, mut h) = project("walk");
+    h.feed("M-^W").unwrap();
+    h.type_text("needle");
+    settle(&mut h);
+
+    let listed = h.results().to_vec();
+    assert_eq!(listed.len(), 2, "{listed:?}");
+
+    h.feed("Down").unwrap();
+    assert_eq!(h.editor().result_index(), 1, "Down picks the second hit");
+    assert_eq!(h.results(), listed.as_slice(), "the hits are still listed");
+    assert_eq!(
+        h.prompt_line().as_deref(),
+        Some("Search in folder: needle"),
+        "the pattern is untouched"
+    );
+
+    h.feed("Up").unwrap();
+    assert_eq!(h.editor().result_index(), 0, "Up goes back");
+    assert_eq!(
+        h.results(),
+        listed.as_slice(),
+        "and the hits are still there"
+    );
 }
 
 #[test]
