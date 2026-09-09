@@ -176,10 +176,6 @@ pub fn draw(
     );
 }
 
-/// How wide the line-number gutter is, in character cells. Zero when off.
-///
-/// Wide enough for the largest line number in the file, so the text does not
-/// shift sideways when the count crosses a power of ten while scrolling.
 /// Where the document's first column starts, in physical pixels.
 ///
 /// The text does not begin at the window edge: the file tree takes a fixed
@@ -216,6 +212,10 @@ pub fn hit(
     text.hit(x - origin, y, -sub_line_offset)
 }
 
+/// How wide the line-number gutter is, in character cells. Zero when off.
+///
+/// Wide enough for the largest line number in the file, so the text does not
+/// shift sideways when the count crosses a power of ten while scrolling.
 pub fn gutter_columns(editor: &Editor) -> usize {
     if !editor.view().line_numbers {
         return 0;

@@ -683,9 +683,10 @@ impl ApplicationHandler<Wake> for App {
                 // status line.
                 if atlas_full && !self.said_atlas_full {
                     self.said_atlas_full = true;
-                    self.editor.say(
-                        "too many different characters on screen to draw them all;                          a smaller font or fewer scripts will fix it",
-                    );
+                    self.editor.say(concat!(
+                        "too many different characters on screen to draw ",
+                        "them all; a smaller font or fewer scripts will fix it",
+                    ));
                     self.redraw();
                 }
             }

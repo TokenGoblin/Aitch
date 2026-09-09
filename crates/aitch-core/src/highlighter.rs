@@ -188,8 +188,9 @@ impl SyntaxThread {
     /// Ask for the visible range of a snapshot to be highlighted.
     ///
     /// Cheap: a rope clone shares its structure, so this copies no text.
-    /// Ask for colour. `fresh` means this is a different document from the
-    /// last request, so nothing the parser is holding applies to it.
+    ///
+    /// `fresh` means this is a different document from the last request, so
+    /// nothing the parser is holding applies to it.
     pub fn request(&mut self, text: &Rope, edits: Vec<TextEdit>, range: Range<usize>, fresh: bool) {
         self.generation += 1;
         let job = Job {

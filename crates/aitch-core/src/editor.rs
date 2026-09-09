@@ -123,6 +123,13 @@ pub struct Editor {
     /// so the UI supplies it; without one, colour still arrives, just not
     /// until something else causes a redraw.
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Whether `^X` is partway through asking about unsaved buffers.
+    ///
+    /// Saving one can open a second question -- a name for an unnamed buffer,
+    /// or permission to overwrite a file that changed on disk -- and those
+    /// answers come back somewhere else entirely. This is how the walk
+    /// through the remaining buffers is picked up again afterwards.
+    quit_in_progress: bool,
     quitting: bool,
 }
 
@@ -154,6 +161,7 @@ impl Editor {
             config: Config::default(),
             pending_recovery: None,
             wake: None,
+            quit_in_progress: false,
             quitting: false,
         }
     }
@@ -275,6 +283,7 @@ impl Editor {
 
         Session {
             root: self.workspace.root().map(Path::to_path_buf),
+            root_opened: self.workspace.root_was_opened(),
             files,
             active: self.workspace.active_index(),
         }
@@ -287,7 +296,14 @@ impl Editor {
     /// scratch file every time the editor starts is not one.
     pub fn restore_session(&mut self, session: &Session) {
         if let Some(root) = &session.root {
-            self.workspace.set_root(root.clone());
+            // Keeping the distinction matters: only a folder that was opened
+            // is watched, so restoring one as merely inferred meant `aitch .`
+            // watched the tree on the first run and never again.
+            if session.root_opened {
+                self.workspace.open_root(root.clone());
+            } else {
+                self.workspace.set_root(root.clone());
+            }
         }
         // Which buffer to end on, counted over the files that actually
         // opened. `session.active` indexes the saved list, and anything
@@ -647,10 +663,6 @@ impl Editor {
         lines
     }
 
-    /// Ask for the visible range to be highlighted.
-    ///
-    /// A margin either side means scrolling a little does not run past the
-    /// coloured region before the next parse lands.
     /// Ask for colour for a document the parser has not seen before.
     ///
     /// The worker survives a switch between two files of the same language,
@@ -662,6 +674,10 @@ impl Editor {
         self.request_highlights_inner(true, true);
     }
 
+    /// Ask for the visible range to be highlighted.
+    ///
+    /// A margin either side means scrolling a little does not run past the
+    /// coloured region before the next parse lands.
     fn request_highlights(&mut self, whole_buffer: bool) {
         self.request_highlights_inner(whole_buffer, false);
     }
@@ -1251,22 +1267,16 @@ impl Editor {
 
         match prompt.kind {
             Kind::SaveBeforeQuit { .. } => match answer {
-                Answer::Yes => {
-                    let outcome = self.write_out();
-                    // Only leave if it actually got written -- and then start
-                    // the quit again rather than leaving, because the next
-                    // unsaved buffer deserves the same question.
-                    if self.workspace.active().is_dirty() {
-                        outcome
-                    } else {
-                        self.begin_quit()
-                    }
-                }
+                // `write_out` resumes the quit itself once the file is
+                // actually written, however many questions that took.
+                Answer::Yes => self.write_out(),
                 Answer::No => {
+                    self.quit_in_progress = false;
                     self.quitting = true;
                     Outcome::Quit
                 }
                 Answer::All | Answer::Cancel => {
+                    self.quit_in_progress = false;
                     self.say("cancelled");
                     Outcome::Redraw
                 }
@@ -1352,6 +1362,7 @@ impl Editor {
         // buffer that happens not to be active would go without a question and
         // without the copy that would have got it back.
         let Some(index) = self.workspace.first_dirty() else {
+            self.quit_in_progress = false;
             self.quitting = true;
             return Outcome::Quit;
         };
@@ -1363,6 +1374,7 @@ impl Editor {
             self.start_highlighting();
         }
         let others = self.workspace.dirty_count().saturating_sub(1);
+        self.quit_in_progress = true;
         self.open_prompt(Kind::SaveBeforeQuit { others })
     }
 
@@ -1384,6 +1396,17 @@ impl Editor {
             Ok(()) => {
                 let lines = self.workspace.active().buffer.len_lines();
                 self.say(format!("Wrote {lines} lines"));
+
+                // Saving on the way out picks the quit back up. Answering
+                // "save?" with yes can divert into a second question -- an
+                // unnamed buffer asks for a name, one changed on disk asks
+                // whether to overwrite it -- and those answers land here
+                // rather than back in the quit. Without this, the file was
+                // written, the editor did not leave, and the buffers behind
+                // it were never asked about.
+                if self.quit_in_progress {
+                    return self.begin_quit();
+                }
             }
             Err(e) => self.say(format!("{e}")),
         }

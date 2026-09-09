@@ -370,6 +370,7 @@ fn the_active_buffer_survives_a_file_going_missing() {
     let mut harness = Harness::nano().with_text("");
     harness.editor_mut().restore_session(&Session {
         root: None,
+        root_opened: true,
         files: vec![
             OpenFile {
                 path: scratch.0.join("deleted.txt"),
@@ -400,6 +401,7 @@ fn a_session_survives_the_round_trip_to_disk() {
     let path = scratch.0.join("session.toml");
     let session = Session {
         root: Some(scratch.0.clone()),
+        root_opened: true,
         files: vec![OpenFile {
             path: scratch.0.join("notes.txt"),
             line: 12,
@@ -422,6 +424,7 @@ fn restoring_a_session_reopens_the_files_at_their_cursors() {
     let mut harness = Harness::nano().with_text("");
     harness.editor_mut().restore_session(&Session {
         root: Some(scratch.0.clone()),
+        root_opened: true,
         files: vec![OpenFile {
             path: path.clone(),
             line: 2,
@@ -446,6 +449,7 @@ fn a_file_that_has_since_been_deleted_is_quietly_skipped() {
     let mut harness = Harness::nano().with_text("");
     harness.editor_mut().restore_session(&Session {
         root: None,
+        root_opened: true,
         files: vec![OpenFile {
             path: scratch.0.join("gone.txt"),
             line: 0,
@@ -470,6 +474,7 @@ fn a_cursor_past_the_end_of_a_shortened_file_lands_inside_it() {
     let mut harness = Harness::nano().with_text("");
     harness.editor_mut().restore_session(&Session {
         root: None,
+        root_opened: true,
         files: vec![OpenFile {
             path,
             line: 900,
@@ -778,6 +783,75 @@ fn saying_yes_walks_every_unsaved_buffer_before_leaving() {
 
     assert!(std::fs::read_to_string(&first).unwrap().contains('A'));
     assert!(std::fs::read_to_string(&second).unwrap().contains('B'));
+}
+
+#[test]
+fn a_save_that_asks_a_second_question_still_finishes_the_quit() {
+    // Answering "save?" with yes can divert: a buffer changed on disk asks
+    // whether to overwrite it, and that answer lands nowhere near the quit.
+    // The file was written, the editor did not leave, and the buffers behind
+    // it were never asked about -- with nothing to say the quit had been
+    // dropped.
+    let scratch = Scratch::new("quit-second-question");
+    let first = scratch.file(
+        "first.txt",
+        "one
+",
+    );
+    let second = scratch.file(
+        "second.txt",
+        "two
+",
+    );
+
+    let mut harness = Harness::nano().with_document(Document::open(&first).unwrap());
+    harness.type_text("A");
+    harness.editor_mut().workspace_mut().open(&second).unwrap();
+    harness.type_text("B");
+
+    // Something else writes first.txt while it is open and unsaved.
+    std::thread::sleep(Duration::from_millis(1100));
+    std::fs::write(
+        &first,
+        "changed by someone else
+",
+    )
+    .unwrap();
+
+    harness.feed("^X").unwrap();
+    assert!(
+        harness
+            .prompt_line()
+            .unwrap_or_default()
+            .starts_with("Save modified buffer?"),
+        "{:?}",
+        harness.prompt_line()
+    );
+
+    harness.type_text("y");
+    let line = harness.prompt_line().unwrap_or_default();
+    assert!(
+        line.contains("changed on disk"),
+        "the overwrite question should come up: {line:?}"
+    );
+
+    harness.type_text("y");
+    assert_eq!(
+        harness.editor().workspace().dirty_count(),
+        1,
+        "the first is written; the second is still unsaved"
+    );
+    assert!(
+        harness
+            .prompt_line()
+            .unwrap_or_default()
+            .starts_with("Save modified buffer?"),
+        "and the quit carries on to it rather than being dropped: {:?}",
+        harness.prompt_line()
+    );
+
+    harness.type_text("y");
+    assert!(harness.should_quit(), "both answered for, so it leaves");
 }
 
 #[test]

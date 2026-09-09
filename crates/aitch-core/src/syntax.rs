@@ -295,10 +295,6 @@ impl Highlighter {
         self.language
     }
 
-    /// Tell the tree what changed, so the next parse can reuse it.
-    ///
-    /// Without this the parse still succeeds — it just does all the work
-    /// again, which is the difference between typing being free and not.
     /// Throw the tree away, so the next parse starts from nothing.
     ///
     /// For when the next text is a different document rather than a later
@@ -308,6 +304,10 @@ impl Highlighter {
         self.tree = None;
     }
 
+    /// Tell the tree what changed, so the next parse can reuse it.
+    ///
+    /// Without this the parse still succeeds — it just does all the work
+    /// again, which is the difference between typing being free and not.
     pub fn edit(&mut self, edit: &InputEdit) {
         if let Some(tree) = self.tree.as_mut() {
             tree.edit(edit);

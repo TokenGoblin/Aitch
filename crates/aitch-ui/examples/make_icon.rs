@@ -143,7 +143,15 @@ fn render(size: u32, tile: [u8; 3], letter: [u8; 3], rows: [u8; 3]) -> Vec<u8> {
             // Accumulate the supersamples of this pixel. Everything outside
             // the tile is transparent, so alpha is averaged along with the
             // colour and the rounded corners come out soft.
+            //
+            // Colour is averaged over the *covered* samples and alpha over all
+            // of them, because PNG, the 32bpp DIB and winit all want straight
+            // alpha rather than premultiplied. Dividing colour by every sample
+            // would darken it in proportion to coverage, and the compositor
+            // would then multiply by alpha a second time -- a black fringe all
+            // the way around the rounded corners.
             let (mut r, mut g, mut b, mut a) = (0u32, 0u32, 0u32, 0u32);
+            let mut covered = 0u32;
             for sy in 0..SS {
                 for sx in 0..SS {
                     let px = x * SS + sx;
@@ -168,14 +176,17 @@ fn render(size: u32, tile: [u8; 3], letter: [u8; 3], rows: [u8; 3]) -> Vec<u8> {
                     g += colour[1] as u32;
                     b += colour[2] as u32;
                     a += 255;
+                    covered += 1;
                 }
             }
 
-            // Averaged over every sample, not just the covered ones: a pixel
-            // half off the corner is half as opaque, which is the point.
-            out.push((r / samples) as u8);
-            out.push((g / samples) as u8);
-            out.push((b / samples) as u8);
+            // Alpha over every sample, so a pixel half off the corner is half
+            // as opaque -- that is the point. Colour over the covered ones
+            // only, so it stays the colour it is rather than fading to black.
+            let mix = covered.max(1);
+            out.push((r / mix) as u8);
+            out.push((g / mix) as u8);
+            out.push((b / mix) as u8);
             out.push((a / samples) as u8);
         }
     }

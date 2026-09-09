@@ -35,6 +35,15 @@ pub struct Session {
     /// The folder, if one was open.
     #[serde(default)]
     pub root: Option<PathBuf>,
+    /// Whether that folder was opened deliberately or worked out from a file.
+    ///
+    /// Restoring has to know: only a folder that was asked for is watched, and
+    /// a session that forgets the difference turns `aitch .` into `aitch
+    /// somefile` the next time it starts. Defaulted, so a session written
+    /// before this existed still loads — it simply does not watch, which is
+    /// what it did anyway.
+    #[serde(default)]
+    pub root_opened: bool,
     #[serde(default)]
     pub files: Vec<OpenFile>,
     /// Which of `files` was in front.
@@ -245,7 +254,6 @@ impl Recovery {
     }
 }
 
-/// Where Aitch keeps what it remembers.
 /// Where a startup failure is written down.
 pub fn failure_log() -> Option<PathBuf> {
     state_dir().map(|dir| dir.join("startup.log"))
@@ -299,6 +307,7 @@ pub fn log_failure(message: &str) {
 /// How many past failures the log keeps.
 const FAILURE_LOG_LINES: usize = 20;
 
+/// Where Aitch keeps what it remembers.
 fn state_dir() -> Option<PathBuf> {
     if cfg!(windows) {
         std::env::var_os("LOCALAPPDATA").map(|base| PathBuf::from(base).join("aitch"))
@@ -556,6 +565,7 @@ mod tests {
 
         let session = Session {
             root: Some(PathBuf::from("/home/someone/project")),
+            root_opened: true,
             files: vec![
                 OpenFile {
                     path: PathBuf::from("src/main.rs"),
@@ -610,6 +620,7 @@ mod tests {
         let path = dir.join("session.toml");
         Session {
             root: None,
+            root_opened: true,
             files: vec![OpenFile {
                 path: PathBuf::from("notes.txt"),
                 line: 120,

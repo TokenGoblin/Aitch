@@ -54,6 +54,15 @@ impl Workspace {
         self.root.as_deref()
     }
 
+    /// Give the workspace a folder that was deliberately opened.
+    ///
+    /// The pair of [`Workspace::set_root`]: this is the one that costs
+    /// something, because it is the one a watcher is started for.
+    pub fn open_root(&mut self, root: PathBuf) {
+        self.root = Some(root);
+        self.root_opened = true;
+    }
+
     /// Give the workspace a folder that was worked out rather than asked for.
     ///
     /// See [`Workspace::root_was_opened`]: this is the weaker of the two, and
@@ -239,6 +248,39 @@ mod tests {
         assert!(
             !inferred.root_was_opened(),
             "but nothing expensive should start on the strength of it"
+        );
+    }
+
+    #[test]
+    fn a_session_round_trip_keeps_a_folder_opened() {
+        // Only an opened folder is watched, and a session is how almost every
+        // run after the first one starts. Losing the distinction here meant
+        // `aitch .` watched the tree once and never again.
+        let mut opened = Workspace::with_root(PathBuf::from("/projects/thing"));
+        opened.push(named("a.txt"));
+        let session = crate::Editor::with_workspace(opened).session();
+        assert!(session.root_opened, "the session remembers it was opened");
+
+        let mut restored = crate::Editor::with_workspace(Workspace::new(named("x.txt")));
+        restored.restore_session(&session);
+        assert!(
+            restored.workspace().root_was_opened(),
+            "and restoring it gets the folder back, watcher and all"
+        );
+    }
+
+    #[test]
+    fn a_session_round_trip_keeps_an_inferred_folder_inferred() {
+        let mut inferred = Workspace::new(named("notes.txt"));
+        inferred.set_root(PathBuf::from("/home/someone"));
+        let session = crate::Editor::with_workspace(inferred).session();
+        assert!(!session.root_opened);
+
+        let mut restored = crate::Editor::with_workspace(Workspace::new(named("x.txt")));
+        restored.restore_session(&session);
+        assert!(
+            !restored.workspace().root_was_opened(),
+            "a home directory inferred from a file is still not watched"
         );
     }
 

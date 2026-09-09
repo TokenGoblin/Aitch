@@ -125,10 +125,14 @@ for ($y = 0; $y -lt $a.Height; $y++) {
         if ($a.GetPixel($x, $y).ToArgb() -ne $b.GetPixel($x, $y).ToArgb()) { $differences++ }
     }
 }
+# Read before disposing: a disposed Bitmap throws on property access, so the
+# throw below would report "Parameter is not valid" instead of the diagnostic
+# this check exists to produce -- in exactly the case it was written for.
+$pixelCount = $a.Width * $a.Height
 $a.Dispose(); $b.Dispose(); $fromExe.Dispose(); $expected.Dispose()
 if ($differences -ne 0) {
     throw ("The release binary is not carrying the application icon " +
-           "($differences of $($a.Width * $a.Height) pixels differ). The build " +
+           "($differences of $pixelCount pixels differ). The build " +
            "script only warns when it cannot embed one; check the build output " +
            "for 'could not embed the icon'.")
 }

@@ -118,7 +118,6 @@ impl TextRenderer {
         }
     }
 
-    /// Physical height of one line of text.
     /// Change how wide a tab is drawn.
     ///
     /// The gutter and the Tab key read the width from the config directly, so
@@ -138,6 +137,7 @@ impl TextRenderer {
         true
     }
 
+    /// Physical height of one line of text.
     pub fn line_height(&self) -> f32 {
         metrics_for(self.font_size, self.scale_factor).line_height
     }

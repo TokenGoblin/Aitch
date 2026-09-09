@@ -284,12 +284,11 @@ fn record_panics() {
         previous(info);
     }));
 
-    if let Some(path) = aitch_core::failure_log() {
-        // Only worth saying where it went once something has gone in it.
-        if path.exists() {
-            eprintln!("aitch: earlier failures are logged in {}", path.display());
-        }
-    }
+    // Deliberately says nothing here. Pointing at the log because the file
+    // exists means one transient failure months ago prefixes every `aitch`,
+    // `aitch --help` and `aitch --version` from then on. The log is for
+    // whoever goes looking after something went wrong, and the thing that
+    // went wrong is what names it.
 }
 
 /// Borrow the console of whatever started us, if it had one.
