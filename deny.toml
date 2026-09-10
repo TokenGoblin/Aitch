@@ -1,0 +1,77 @@
+# What the dependency tree is allowed to contain.
+#
+#     cargo deny check
+#
+# Without this file the defaults allow no licence at all, so every crate is
+# rejected and the output says nothing. Run by CI, so a new dependency that
+# brings a vulnerability or a licence this project cannot honour fails there
+# rather than being noticed later.
+
+[advisories]
+# Anything with a published advisory fails, which is the point.
+#
+# `unmaintained` is a warning rather than a failure. It describes the state of
+# a project, not a defect in the code, and there is usually nothing to be done
+# about one that arrives through a dependency of a dependency: see ttf-parser
+# below, whose own advisory says no safe upgrade exists.
+unmaintained = "all"
+yanked = "deny"
+ignore = [
+    # ttf-parser is unmaintained with no upgrade path. It reaches this project
+    # twice, through cosmic-text -> fontdb and through winit -> sctk-adwaita,
+    # so it leaves when those move to skrifa and not before. Worth knowing
+    # about: it parses fonts, which is untrusted input in complex binary
+    # formats. Recorded rather than silently allowed.
+    "RUSTSEC-2026-0192",
+
+    # paste is unmaintained, and is a proc-macro reached through
+    # wgpu-hal -> metal: wgpu's macOS backend, which is compiled on neither of
+    # the platforms this ships to. It is in the lock file because the lock
+    # file covers every target, not because anything here builds it.
+    "RUSTSEC-2024-0436",
+]
+
+[licenses]
+# Permissive licences, and MPL-2.0, which is the one thing here that is not.
+#
+# MPL is weak copyleft per *file*: linking it into an MIT binary is fine and
+# redistribution is fine, so long as the MPL sources stay available and any
+# changes to those files are published. Nothing here modifies them.
+# `nucleo` and `nucleo-matcher` are the crates in question -- the fuzzy matcher
+# behind ^T -- and they offer no permissive alternative.
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    "0BSD",
+]
+# A dual-licensed crate has to actually offer something above. Two here are
+# permissive-or-copyleft and this is what picks the permissive side:
+# self_cell is "Apache-2.0 OR GPL-2.0-only", r-efi adds LGPL to MIT/Apache.
+confidence-threshold = 0.9
+
+[bans]
+# The tree carries several crates at two versions -- windows-sys at four --
+# because the ecosystem migrates at its own pace. Not worth failing over.
+multiple-versions = "allow"
+# A wildcard version from crates.io is a supply-chain hazard: it accepts
+# whatever is published next. The workspace's own crates are path
+# dependencies, which are wildcards only in the sense that they have no
+# version to pin, and those are exempt.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+# Nothing from a git URL or a private registry: everything published,
+# versioned and reproducible.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

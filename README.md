@@ -157,6 +157,7 @@ Two profiles ship, both just data:
 | [`docs/config.md`](docs/config.md) | Every setting, and where the file goes |
 | [`docs/keymap.md`](docs/keymap.md) | Writing your own keymap |
 | [`docs/screenshots.md`](docs/screenshots.md) | Regenerating the images above |
+| [`docs/third-party.md`](docs/third-party.md) | What the dependencies are licensed as |
 | [`CHANGELOG.md`](CHANGELOG.md) | What changed, and what it measured |
 | [`PLAN.md`](PLAN.md) | The design, and the budgets it is held to |
 
@@ -200,3 +201,9 @@ window, it does not belong here.
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
+
+The binary also contains its dependencies, nearly all MIT and all permissive
+bar one: the fuzzy matcher behind `^T` is MPL-2.0, which is fine to link and
+redistribute and asks nothing of you.
+[`docs/third-party.md`](docs/third-party.md) is the detail, and
+[`deny.toml`](deny.toml) is the machine-readable version that CI enforces.

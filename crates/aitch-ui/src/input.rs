@@ -5,7 +5,7 @@
 //!
 //! The awkward part is Ctrl. Some platforms report Ctrl+letter as the C0
 //! control character it produces in a terminal (`^A` arrives as `U+0001`)
-//! rather than as the letter. [`unmap_control`] puts those back, so a keymap
+//! rather than as the letter. `unmap_control` puts those back, so a keymap
 //! file can say `^A` and mean the A key everywhere.
 
 use aitch_core::{Chord, Key, Mods, NamedKey};

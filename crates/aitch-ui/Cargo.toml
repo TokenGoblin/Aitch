@@ -6,11 +6,20 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# Distributed as a built binary, not on crates.io: the crates depend on each
+# other by path with no version, which crates.io does not accept. Saying so
+# lets `cargo deny` treat a wildcard version as the supply-chain hazard it is
+# everywhere else.
+publish = false
 
 [dependencies]
 aitch-core = { workspace = true }
 # Named in PLAN.md Phase 2 for exactly this.
-arboard = "3"
+#
+# Without default features: they turn on clipboard *image* support, which
+# drags in `image` and its decoders -- twelve crates compiled into a text
+# editor that never puts a picture on the clipboard.
+arboard = { version = "3", default-features = false }
 cosmic-text = "0.17"
 winit = "0.30"
 wgpu = "26"
@@ -21,7 +30,9 @@ pollster = "1"
 [dev-dependencies]
 # The offscreen render test drives wgpu directly.
 aitch-core = { workspace = true }
-# Not in the plan's stack table, and it does not need to be: this is dev-only,
-# for the dump_frame example's --png, and arboard already builds the same
-# version of it through `image`. Nothing new is compiled and nothing new ships.
+# Not in the plan's stack table: dev-only, for the PNGs that dump_frame and
+# make_icon write. It used to come free, because arboard's default features
+# pulled `image` in and that pulled this; now that those are off, it is a real
+# addition -- of one crate, to tests and examples, never to the binary. Turning
+# twelve crates out of what ships to add one to what does not is the trade.
 png = "0.18"

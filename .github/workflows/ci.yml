@@ -64,6 +64,19 @@ jobs:
             printf '%s\n' "$summary" | head -40
           fi
 
+      # What the dependency tree is allowed to contain: no advisory, no yanked
+      # crate, no licence this project cannot honour, nothing from outside
+      # crates.io. See deny.toml, which records the two unmaintained crates
+      # that are known about and why neither can be helped here.
+      #
+      # Linux only. It reads the lock file, which covers every target, so
+      # running it on both would say the same thing twice.
+      - name: Dependencies
+        if: runner.os == 'Linux'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
       - name: Format
         run: cargo fmt --all --check
 

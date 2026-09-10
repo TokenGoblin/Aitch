@@ -2,6 +2,41 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Dependencies
+
+- **Twelve crates out of the shipped binary**, 191 down to 179. `arboard`'s
+  default features turn on clipboard *image* support, which pulls in `image`
+  and its decoders — into a text editor that never puts a picture on the
+  clipboard. Turned off. The `png` dev-dependency used to come free through
+  that and is now a real addition of one crate, to tests and examples only.
+
+- **[`deny.toml`](deny.toml), and CI enforces it.** `cargo deny check` now
+  fails on a security advisory, a yanked crate, a licence this project cannot
+  honour, a wildcard version, or anything from outside crates.io. Without a
+  config the defaults allow no licence at all, so it rejected all 366 crates
+  and said nothing useful.
+
+  The tree has **no known vulnerabilities and nothing yanked**. Two crates are
+  unmaintained and both are recorded rather than silently allowed: `ttf-parser`
+  ([RUSTSEC-2026-0192](https://rustsec.org/advisories/RUSTSEC-2026-0192)),
+  which has no upgrade path and arrives through both `cosmic-text` and
+  `winit`, and `paste`, which reaches the lock file through wgpu's macOS
+  backend and is compiled on neither platform this ships to.
+
+- **[`docs/third-party.md`](docs/third-party.md).** Everything is permissive
+  bar one: `nucleo` and `nucleo-matcher`, the fuzzy matcher behind `^T`, are
+  MPL-2.0, so the binary contains MPL code. That is fine to link and
+  redistribute, but the README said MIT flat and said nothing about it. Two
+  further crates offer a copyleft licence alongside permissive ones —
+  `self_cell` and `r-efi` — and this takes the permissive side.
+
+- The workspace crates are marked `publish = false`, which is what they are:
+  they depend on each other by path with no version, which crates.io does not
+  accept. It also lets `cargo deny` treat a wildcard version as the hazard it
+  is everywhere else.
+
 ## [0.1.2] — 2026-09-09
 
 0.1.1 was confirmed to start on the machine 0.1.0 died on, which settles the
