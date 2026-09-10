@@ -57,17 +57,46 @@ if [ "$skip_build" -eq 0 ]; then
     flags="$flags"$'\x1f'"--remap-path-prefix=$root=[aitch]"
     flags="$flags"$'\x1f'"--remap-path-prefix=$HOME=[home]"
 
-    ( cd "$root" && CARGO_ENCODED_RUSTFLAGS="$flags" cargo build --release -p aitch )
+    # rustc's remapping does not reach the C compiler, and a good deal of this
+    # tree is C: every tree-sitter grammar is built by the `cc` crate. Those
+    # have to be told separately, or the build machine's paths come back in
+    # through the back door.
+    c_map="-ffile-prefix-map=$cargo_home=[cargo]"
+    c_map="$c_map -ffile-prefix-map=$root=[aitch]"
+    c_map="$c_map -ffile-prefix-map=$HOME=[home]"
+
+    (
+        cd "$root"
+        CARGO_ENCODED_RUSTFLAGS="$flags" \
+        CFLAGS="${CFLAGS:-} $c_map" \
+        CXXFLAGS="${CXXFLAGS:-} $c_map" \
+            cargo build --release -p aitch
+    )
 fi
 
 [ -f "$binary" ] || { echo "no release binary at $binary; run without --skip-build" >&2; exit 1; }
 
+# Stripped before it is checked or shipped, which is what a Linux package is
+# expected to carry anyway -- Debian asks for it -- and which takes the symbol
+# and debug tables out along with anything hiding in them. Panic messages are
+# unaffected: their file and line come from `file!()`, which is a string in the
+# binary rather than debug info, and the remapping above already covers those.
+if command -v strip >/dev/null 2>&1; then
+    before="$(stat -c%s "$binary")"
+    strip --strip-unneeded "$binary"
+    after="$(stat -c%s "$binary")"
+    echo "Stripped: $((before / 1024)) KiB -> $((after / 1024)) KiB"
+fi
+
 # Nothing about this machine goes out in a published binary. A hard failure,
-# not a warning: far easier to notice here than after upload.
-if leaks="$(grep -aoE '/home/[a-zA-Z0-9_.-]+' "$binary" | sort -u)" && [ -n "$leaks" ]; then
+# not a warning: far easier to notice here than after upload. The whole string
+# is reported rather than just the path inside it, because "it says
+# /home/runner" does not say which part of the build put it there -- rustc, the
+# C compiler behind the tree-sitter grammars, or something else again.
+if leaks="$(strings -a "$binary" | grep -E '/home/[a-zA-Z0-9_.-]+' | sort -u | head -20)" \
+        && [ -n "$leaks" ]; then
     echo "the release binary carries paths from the machine that built it:" >&2
-    echo "$leaks" >&2
-    echo "rebuild without --skip-build so the remapping is applied" >&2
+    echo "$leaks" | sed 's/^/    /' >&2
     exit 1
 fi
 echo "Binary carries no build-machine paths"
