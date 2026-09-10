@@ -148,3 +148,102 @@ jobs:
 
             New to it? [docs/guide.md](https://github.com/TokenGoblin/Aitch/blob/main/docs/guide.md)
             is the guide.
+
+  linux-packages:
+    name: Linux packages
+    # Deliberately not ubuntu-latest. A binary built against an old glibc runs
+    # on newer systems and the reverse is not true, and PLAN.md Phase 8 asks
+    # for the oldest glibc worth supporting -- a static build is not possible
+    # here, since winit, wgpu and cosmic-text all dlopen their graphics
+    # libraries and a static musl binary cannot dlopen at all.
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Needed only for the pkg-config probes while compiling. winit and wgpu
+      # dlopen these at run time rather than linking against them.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            pkg-config libx11-dev libxkbcommon-dev libwayland-dev desktop-file-utils
+
+      - name: Test
+        run: cargo test --workspace --release
+
+      - name: Work out the version
+        id: version
+        run: |
+          version='${{ inputs.version }}'
+          if [ -z "$version" ] && [ '${{ github.ref_type }}' = tag ]; then
+            version="$(echo '${{ github.ref_name }}' | sed 's/^v//')"
+          fi
+          if [ -z "$version" ]; then
+            version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          fi
+          [ -n "$version" ] || { echo 'could not work out a version'; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building $version"
+
+      - name: Build the packages
+        run: ./packaging/linux/build.sh --version ${{ steps.version.outputs.version }}
+
+      # Every artifact is checked by running the binary out of it rather than
+      # by looking at the file. Checking that an installer exists is not the
+      # same as checking it works, and that lesson cost a release already.
+      - name: Check the tarball runs
+        run: |
+          version='${{ steps.version.outputs.version }}'
+          unpacked="$(mktemp -d)"
+          tar -xzf "target/dist/aitch-$version-x86_64-linux.tar.gz" -C "$unpacked"
+          reported="$("$unpacked/aitch-$version-x86_64-linux/aitch" --version)"
+          [ "$reported" = "aitch $version" ] || { echo "tarball says '$reported'"; exit 1; }
+          echo "Tarball runs and reports $reported"
+
+      - name: Check the AppImage runs
+        run: |
+          version='${{ steps.version.outputs.version }}'
+          image="target/dist/Aitch-$version-x86_64.AppImage"
+          # A runner has no FUSE, so the image cannot mount itself.
+          reported="$("$image" --appimage-extract-and-run --version)"
+          [ "$reported" = "aitch $version" ] || { echo "AppImage says '$reported'"; exit 1; }
+          echo "AppImage runs and reports $reported"
+
+      - name: Check the package installs, runs and removes
+        run: |
+          version='${{ steps.version.outputs.version }}'
+          deb="target/dist/aitch_${version}_amd64.deb"
+          dpkg-deb --info "$deb"
+          sudo dpkg -i "$deb"
+          reported="$(aitch --version)"
+          [ "$reported" = "aitch $version" ] || { echo "installed says '$reported'"; exit 1; }
+          # An invalid desktop entry means no launcher ever shows it.
+          desktop-file-validate /usr/share/applications/aitch.desktop
+          test -f /usr/share/icons/hicolor/256x256/apps/aitch.png
+          sudo dpkg -r aitch
+          test ! -e /usr/bin/aitch
+          echo "Installs, runs as $reported, and removes cleanly"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aitch-${{ steps.version.outputs.version }}-linux-x86_64
+          path: |
+            target/dist/*.tar.gz
+            target/dist/*.deb
+            target/dist/*.AppImage
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/dist/*.tar.gz
+            target/dist/*.deb
+            target/dist/*.AppImage

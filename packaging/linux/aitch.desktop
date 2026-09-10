@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Aitch
+GenericName=Text Editor
+Comment=A text editor with nano's interaction model and VS Code's project model
+Exec=aitch %F
+TryExec=aitch
+Icon=aitch
+Terminal=false
+StartupNotify=true
+Categories=Utility;TextEditor;Development;
+Keywords=editor;text;nano;code;
+# %F above is a list of files, so several can be dropped on it at once, and
+# a folder works too: Aitch opens one as a workspace.
+MimeType=text/plain;text/x-chdr;text/x-csrc;text/x-c++src;text/x-c++hdr;text/x-python;text/x-rust;text/markdown;text/css;text/html;application/json;application/toml;application/x-yaml;application/x-shellscript;text/javascript;
