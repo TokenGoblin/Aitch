@@ -591,7 +591,50 @@ impl Editor {
 
     /// The footer, laid out for a window this many character cells wide.
     pub fn footer(&self, width: usize) -> Footer {
-        footer::layout(&self.keymap.footer_entries(self.context), width)
+        // A question's answers are read as characters rather than resolved
+        // through the keymap, so the keymap cannot describe them and the
+        // ordinary prompt footer is actively misleading about them: it offers
+        // `Enter Confirm`, which on a question means *yes*, and never mentions
+        // `N`. The way to say no was a key nothing on screen named.
+        //
+        // Cancel and help are real bindings, so those still come from the
+        // keymap and stay right in any profile.
+        let answers = self
+            .prompt
+            .as_ref()
+            .filter(|prompt| prompt.kind.is_question())
+            .map(|prompt| prompt.kind.answers())
+            .unwrap_or_default();
+
+        if answers.is_empty() {
+            return footer::layout(&self.keymap.footer_entries(self.context), width);
+        }
+
+        let mut entries: Vec<crate::keymap::FooterEntry<'_>> = answers
+            .iter()
+            .enumerate()
+            .map(|(order, (key, label))| crate::keymap::FooterEntry {
+                chord: crate::keymap::Chord::from_char(*key),
+                label,
+                command: None,
+                // Ahead of anything from the keymap, so a narrow window drops
+                // help before it drops the answer to the question on screen.
+                priority: 1000 - order as i32,
+            })
+            .collect();
+
+        entries.extend(
+            self.keymap
+                .footer_entries(self.context)
+                .into_iter()
+                .filter(|entry| {
+                    matches!(
+                        entry.command,
+                        Some(Command::PromptCancel) | Some(Command::Help)
+                    )
+                }),
+        );
+        footer::layout(&entries, width)
     }
 
     /// The status line: a transient message if there is one, otherwise what

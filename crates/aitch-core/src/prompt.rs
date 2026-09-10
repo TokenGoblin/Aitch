@@ -75,6 +75,29 @@ impl Kind {
         )
     }
 
+    /// The answers this question takes, as the key and what it means.
+    ///
+    /// The footer is built from this, so a question cannot offer an answer it
+    /// does not advertise — which it did for a long time: every question drew
+    /// the ordinary prompt footer, `Enter Confirm / Up Prev / Down Next`, and
+    /// never said `N`. `Enter` on a question means *yes*, so the one way out
+    /// of "Save modified buffer?" without saving was a key nothing mentioned.
+    ///
+    /// Empty for a prompt that takes typed text, which has a footer already.
+    pub fn answers(&self) -> &'static [(char, &'static str)] {
+        match self {
+            // "All" only means something where there is a series to get
+            // through, so the two confirmations that walk one have it and the
+            // one-off questions do not.
+            Kind::ReplaceConfirm { .. } => &[('y', "Yes"), ('n', "No"), ('a', "All")],
+            Kind::SaveBeforeQuit { .. } | Kind::OverwriteChanged => &[('y', "Yes"), ('n', "No")],
+            Kind::ProjectReplaceConfirm { .. } | Kind::RestoreRecovery { .. } => {
+                &[('y', "Yes"), ('n', "No")]
+            }
+            _ => &[],
+        }
+    }
+
     /// Whether the buffer should follow along as the term is typed.
     pub fn is_incremental(&self) -> bool {
         matches!(self, Kind::Search { .. })
@@ -220,6 +243,11 @@ impl Prompt {
 
     /// The whole line as it reads on screen: `Search: needle`.
     pub fn line(&self) -> String {
+        // A question has no input, so there is nothing for a colon to
+        // introduce: "Save modified buffer?: " read like a missing word.
+        if self.kind.is_question() {
+            return format!("{} ", self.label());
+        }
         format!("{}: {}", self.label(), self.input)
     }
 
@@ -416,6 +444,57 @@ pub fn parse_goto(input: &str) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every question has to say how to answer it, or the footer built from
+    /// this cannot. A question that advertises nothing is one whose only way
+    /// out is a key the screen never names -- which is what "Save modified
+    /// buffer?" was.
+    #[test]
+    fn every_question_offers_answers_and_nothing_else_does() {
+        let questions = [
+            Kind::SaveBeforeQuit { others: 0 },
+            Kind::SaveBeforeQuit { others: 3 },
+            Kind::OverwriteChanged,
+            Kind::RestoreRecovery {
+                describes: "notes.txt".into(),
+            },
+            Kind::ReplaceConfirm {
+                find: "a".into(),
+                replace: "b".into(),
+                done: 0,
+            },
+            Kind::ProjectReplaceConfirm {
+                find: "a".into(),
+                replace: "b".into(),
+                files: 1,
+                occurrences: 2,
+            },
+        ];
+        for kind in questions {
+            assert!(kind.is_question(), "{kind:?}");
+            let answers = kind.answers();
+            assert!(
+                !answers.is_empty(),
+                "{kind:?} advertises no way to answer it"
+            );
+            assert!(
+                answers.iter().any(|(key, _)| *key == 'n'),
+                "{kind:?} offers no way to say no"
+            );
+        }
+
+        // A prompt that takes typed text has a footer from the keymap and
+        // must not grow a second one.
+        for kind in [
+            Kind::SaveAs,
+            Kind::GotoLine,
+            Kind::QuickOpen,
+            Kind::ProjectSearch,
+        ] {
+            assert!(!kind.is_question(), "{kind:?}");
+            assert!(kind.answers().is_empty(), "{kind:?}");
+        }
+    }
 
     fn prompt() -> Prompt {
         Prompt::new(Kind::SaveAs, 0)

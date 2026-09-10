@@ -256,6 +256,11 @@ pub struct Chord {
 }
 
 impl Chord {
+    /// A bare key with no modifiers, as a question's answer is typed.
+    pub fn from_char(c: char) -> Chord {
+        Chord::new(Mods::NONE, Key::Char(c))
+    }
+
     /// Build a chord, applying the normalization rules from the module docs.
     pub fn new(mods: Mods, key: Key) -> Chord {
         match key {
@@ -396,7 +401,12 @@ impl Binding {
 pub struct FooterEntry<'a> {
     pub chord: Chord,
     pub label: &'a str,
-    pub command: &'a Command,
+    /// The command this runs, when it came from the keymap.
+    ///
+    /// `None` for an entry the keymap knows nothing about: the answers to a
+    /// question are read as characters rather than resolved through a
+    /// binding, so there is no command behind `Y` or `N`.
+    pub command: Option<&'a Command>,
     pub priority: i32,
 }
 
@@ -527,7 +537,7 @@ impl Keymap {
                         FooterEntry {
                             chord: b.primary_chord(),
                             label,
-                            command: &b.command,
+                            command: Some(&b.command),
                             priority: b.priority,
                         },
                     )
@@ -965,7 +975,9 @@ mod tests {
         let km = Keymap::from_toml(NANO).unwrap();
         let entries = km.footer_entries(Context::Editor);
         // Arrow keys are bound but must never take a footer cell.
-        assert!(entries.iter().all(|e| *e.command != Command::MoveLeft));
+        assert!(entries
+            .iter()
+            .all(|e| e.command != Some(&Command::MoveLeft)));
     }
 
     #[test]

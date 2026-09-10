@@ -108,7 +108,13 @@ fn main() {
                     .collect();
                 encode_ico(&entries)
             }
-            "png" => encode_png(PREVIEW, &render(PREVIEW, tile, letter, rows)),
+            // A trailing `-N` names the size, which is what the freedesktop
+            // icon directories want: `aitch-48.png` is the 48x48 one. Without
+            // a suffix it is the single large picture a README would use.
+            "png" => {
+                let size = png_size(out);
+                encode_png(size, &render(size, tile, letter, rows))
+            }
             // The same shape dump_frame writes for a `.raw`: width, height,
             // then the pixels. The binary includes this with `include_bytes!`
             // and hands it to winit, so there is no decoder in the editor and
@@ -130,6 +136,20 @@ fn main() {
         std::fs::write(out, &bytes).unwrap_or_else(|e| panic!("could not write {out}: {e}"));
         eprintln!("wrote {out} ({} bytes)", bytes.len());
     }
+}
+
+/// The size a `.png` output asks for, from a trailing `-N` in its name.
+///
+/// `aitch-48.png` is 48x48. Anything without a suffix is [`PREVIEW`], the one
+/// large picture. Sizes are clamped: a typo should not try to render a
+/// hundred-thousand-pixel icon, and zero is not a picture.
+fn png_size(path: &str) -> u32 {
+    std::path::Path::new(path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|stem| stem.rsplit_once('-'))
+        .and_then(|(_, size)| size.parse::<u32>().ok())
+        .map_or(PREVIEW, |size| size.clamp(1, 1024))
 }
 
 /// One icon at `size`, as tightly packed RGBA.

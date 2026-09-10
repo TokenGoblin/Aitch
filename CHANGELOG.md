@@ -4,6 +4,28 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A yes/no question never said how to answer it, so there was no way out of
+  "Save modified buffer?" but saving.** Every question drew the ordinary
+  prompt footer — `Enter Confirm`, `Up Prev`, `Down Next`, `^C Cancel` — which
+  never mentions `N`. Worse, `Enter` on a question means *yes*, so the footer's
+  most prominent entry saved the file, and on an unnamed buffer that opened
+  "File Name to Write". `^C` only cancelled the quit. The one key that
+  discards, `n`, was the one nothing on screen named.
+
+  That is exactly what PLAN.md §1 forbids: nothing is discoverable only by
+  memory. The footer is built from the question now, so it reads `Y Yes / N No
+  / ^C Cancel`, and the per-match replace confirmation grows an `A All`
+  because it is the question that says what it accepts rather than a list
+  written out somewhere by hand. Cancel and help still come from the keymap,
+  since those are real bindings and stay right in any profile.
+
+  Present since Phase 3, in all three releases. Found by using the editor.
+
+- A question no longer renders a stray colon: `Save modified buffer?: ` had
+  nothing after it for the colon to introduce.
+
 ### Dependencies
 
 - **Twelve crates out of the shipped binary**, 191 down to 179. `arboard`'s

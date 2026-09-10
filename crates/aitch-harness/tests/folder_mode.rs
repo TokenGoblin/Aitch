@@ -363,7 +363,7 @@ fn saving_over_a_file_something_else_changed_asks_first() {
     h.feed("^O").unwrap();
     assert_eq!(
         h.prompt_line().as_deref(),
-        Some("File changed on disk since you opened it. Save anyway?: ")
+        Some("File changed on disk since you opened it. Save anyway? ")
     );
     assert_eq!(
         fs::read_to_string(&path).unwrap(),

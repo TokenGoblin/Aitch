@@ -148,7 +148,21 @@ fn exit_asks_before_discarding_changes() {
     h.feed("^X").unwrap();
 
     assert!(!h.should_quit(), "it must ask first");
-    assert_eq!(h.prompt_line().as_deref(), Some("Save modified buffer?: "));
+    assert_eq!(h.prompt_line().as_deref(), Some("Save modified buffer? "));
+
+    // And it says how to answer. PLAN.md 1: nothing is discoverable only by
+    // memory. For a long time this drew the ordinary prompt footer -- Enter
+    // Confirm, Up Prev, Down Next -- which never mentions N, and Enter on a
+    // question means yes, so the only way out without saving was a key
+    // nothing on screen named.
+    let footer = h.footer_lines().join("  ");
+    assert!(footer.contains("Y Yes"), "{footer:?}");
+    assert!(footer.contains("N No"), "{footer:?}");
+    assert!(footer.contains("Cancel"), "{footer:?}");
+    assert!(
+        !footer.contains("Prev") && !footer.contains("Next"),
+        "the text-prompt footer has no business here: {footer:?}"
+    );
 
     // "n" discards and leaves.
     h.type_text("n");
@@ -349,7 +363,17 @@ fn replace_asks_for_both_halves_then_confirms_each_match() {
 
     // Now confirming, one match at a time.
     assert_eq!(h.context(), Context::Search);
-    assert_eq!(h.prompt_line().as_deref(), Some("Replace this instance?: "));
+    assert_eq!(h.prompt_line().as_deref(), Some("Replace this instance? "));
+
+    // This one has a third answer, and the footer grows it rather than being
+    // written out somewhere by hand.
+    let footer = h.footer_lines().join("  ");
+    for advertised in ["Y Yes", "N No", "A All"] {
+        assert!(
+            footer.contains(advertised),
+            "{advertised} missing: {footer:?}"
+        );
+    }
     assert_eq!(h.selection().as_deref(), Some("cat"));
 
     h.type_text("y");
