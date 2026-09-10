@@ -2,7 +2,43 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.1.3] — 2026-09-10
+
+The first release with Linux packages, and a way out of a question that only
+had one answer.
+
+### Packaging
+
+- **Linux, at last**: an AppImage, a `.deb` and a tarball, which PLAN.md
+  Phase 8 asked for and 0.1.0 skipped. Built by `packaging/linux/build.sh` on
+  `ubuntu-22.04` rather than the newest image, because a binary built against
+  an old glibc runs on newer systems and the reverse is not true.
+
+  Each is checked by running the binary out of it, not by looking at the file:
+  the tarball is unpacked somewhere else and run, the AppImage is run, and the
+  `.deb` is installed, run, validated for its desktop entry and icon, then
+  removed and checked gone.
+
+  The plan asked for a static build "to avoid glibc pain" and that turned out
+  not to exist: winit, wgpu and cosmic-text all `dlopen` their X11, Wayland
+  and Vulkan libraries, and a statically linked musl binary cannot `dlopen` at
+  all. What the binary actually needs is now measured rather than guessed —
+  `ldd` says `libgcc_s`, `libm` and `libc`, and nothing else — so the `.deb`
+  requires only `libc6`, at the version read out of the binary rather than one
+  written down, and lists the graphics libraries as `Recommends` so it will
+  not refuse to install on a machine that could run it perfectly well.
+
+- **A Flatpak manifest**, with AppStream metadata and a generator that turns
+  `Cargo.lock` into the offline source list a Flathub build needs — 382
+  crates, checksummed from the lock file, fetched by nothing at generation
+  time. Written and checked but **not yet built**: that needs a machine with
+  `flatpak-builder`.
+
+- Both platforms are built in parallel and published by one job that waits for
+  both, so a release takes as long as the slower build rather than the sum,
+  and the two cannot race to create the same release.
+
+### Fixed
 
 ### Fixed
 
