@@ -40,7 +40,7 @@ echo "Packaging Aitch $version"
 # The documents that ship beside the binary, the same five the Windows
 # installer carries. A missing one is a build failure rather than a silent
 # omission; crates/aitch-harness/tests/documentation.rs checks the same list.
-docs=(README.md LICENSE docs/guide.md docs/config.md docs/keymap.md)
+docs=(README.md LICENSE docs/guide.md docs/config.md docs/keymap.md docs/third-party.md)
 for doc in "${docs[@]}"; do
     [ -f "$root/$doc" ] || { echo "ships $doc, which is not there" >&2; exit 1; }
 done
@@ -76,40 +76,62 @@ fi
 
 [ -f "$binary" ] || { echo "no release binary at $binary; run without --skip-build" >&2; exit 1; }
 
+mkdir -p "$dist"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+# Everything from here on packages a copy, never the tree's own artifact.
+# Stripping target/release/aitch in place would leave cargo none the wiser --
+# its fingerprint is unchanged, so the next `cargo build --release` relinks
+# nothing and whoever ran this locally is left with a symbol-free binary and
+# useless backtraces until something else forces a rebuild.
+staged="$work/aitch"
+cp "$binary" "$staged"
+
 # Stripped before it is checked or shipped, which is what a Linux package is
 # expected to carry anyway -- Debian asks for it -- and which takes the symbol
 # and debug tables out along with anything hiding in them. Panic messages are
 # unaffected: their file and line come from `file!()`, which is a string in the
 # binary rather than debug info, and the remapping above already covers those.
 if command -v strip >/dev/null 2>&1; then
-    before="$(stat -c%s "$binary")"
-    strip --strip-unneeded "$binary"
-    after="$(stat -c%s "$binary")"
+    before="$(stat -c%s "$staged")"
+    strip --strip-unneeded "$staged"
+    after="$(stat -c%s "$staged")"
     echo "Stripped: $((before / 1024)) KiB -> $((after / 1024)) KiB"
 fi
 
 # Nothing about this machine goes out in a published binary. A hard failure,
-# not a warning: far easier to notice here than after upload. The whole string
-# is reported rather than just the path inside it, because "it says
-# /home/runner" does not say which part of the build put it there -- rustc, the
-# C compiler behind the tree-sitter grammars, or something else again.
-if leaks="$(strings -a "$binary" | grep -E '/home/[a-zA-Z0-9_.-]+' | sort -u | head -20)" \
-        && [ -n "$leaks" ]; then
+# not a warning: far easier to notice here than after upload.
+#
+# Written out rather than as one `if` with a pipeline in it, because that
+# version failed *open*. `strings | grep | sort -u | head -20` under
+# `set -o pipefail` returns 141 once sort's output outruns the pipe buffer and
+# head walks away: SIGPIPE, non-zero status, the `&&` short-circuits and the
+# check is skipped. So it passed silently in exactly the case it exists for --
+# a binary built with no remapping at all, which has tens of thousands of
+# paths in it. Truncation happens when reporting, never before the test.
+command -v strings >/dev/null 2>&1 || {
+    echo "strings is not installed, so the binary cannot be checked" >&2
+    exit 1
+}
+leaks="$(strings -a "$staged" | grep -E '/home/[a-zA-Z0-9_.-]+' | sort -u || true)"
+if [ -n "$leaks" ]; then
     echo "the release binary carries paths from the machine that built it:" >&2
-    echo "$leaks" | sed 's/^/    /' >&2
+    # The whole string, not just the path inside it: "it says /home/runner"
+    # does not say which part of the build put it there -- rustc, the C
+    # compiler behind the tree-sitter grammars, or something else again.
+    echo "$leaks" | head -20 | sed 's/^/    /' >&2
+    echo "    ... $(echo "$leaks" | wc -l) distinct paths in total" >&2
     exit 1
 fi
 echo "Binary carries no build-machine paths"
 
 # What it actually needs at run time, for the record and for the .deb's
-# dependencies. dlopened libraries do not appear here, which is the point:
-# they are found or gracefully missed at run time, not required to start.
+# dependencies below. dlopened libraries do not appear here, which is the
+# point: they are found or gracefully missed at run time, not required to
+# start.
 echo "Dynamically linked against:"
-ldd "$binary" | sed 's/^/    /'
-
-mkdir -p "$dist"
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+ldd "$staged" | sed 's/^/    /'
 
 # -- icons -------------------------------------------------------------------
 #
@@ -120,13 +142,20 @@ icon_args=()
 for size in "${icon_sizes[@]}"; do
     icon_args+=("$work/aitch-$size.png")
 done
-( cd "$root" && cargo run -q -p aitch-ui --release --example make_icon -- "${icon_args[@]}" )
+# The same rustflags as the build above. Cargo keys its fingerprints on
+# them, so running this without would rebuild every shared dependency and
+# then rebuild the editor again on the next run.
+(
+    cd "$root"
+    CARGO_ENCODED_RUSTFLAGS="${flags:-}" \
+        cargo run -q -p aitch-ui --release --example make_icon -- "${icon_args[@]}"
+)
 
 # Lay out the shared tree once: both the .deb and the AppImage want the same
 # thing under usr/, so build it once and copy it into each.
 stage="$work/tree"
 mkdir -p "$stage/usr/bin" "$stage/usr/share/applications" "$stage/usr/share/doc/aitch"
-install -m 755 "$binary" "$stage/usr/bin/aitch"
+install -m 755 "$staged" "$stage/usr/bin/aitch"
 install -m 644 "$here/aitch.desktop" "$stage/usr/share/applications/aitch.desktop"
 for doc in "${docs[@]}"; do
     install -m 644 "$root/$doc" "$stage/usr/share/doc/aitch/$(basename "$doc")"
@@ -144,12 +173,16 @@ done
 # folder does not scatter files across it.
 portable="aitch-$version-x86_64-linux"
 mkdir -p "$work/$portable"
-install -m 755 "$binary" "$work/$portable/aitch"
+install -m 755 "$staged" "$work/$portable/aitch"
 for doc in "${docs[@]}"; do
     install -m 644 "$root/$doc" "$work/$portable/$(basename "$doc")"
 done
 install -m 644 "$work/aitch-256.png" "$work/$portable/aitch.png"
-install -m 644 "$here/aitch.desktop" "$work/$portable/aitch.desktop"
+# Deliberately no aitch.desktop here. It says `Exec=aitch` and `TryExec=aitch`,
+# which are right for a package that puts the binary on PATH and wrong for an
+# archive unpacked anywhere -- TryExec would fail to resolve and a launcher
+# would hide the entry outright. A desktop file that silently does nothing is
+# worse than none.
 tar -czf "$dist/$portable.tar.gz" -C "$work" "$portable"
 echo "Built $dist/$portable.tar.gz ($(du -h "$dist/$portable.tar.gz" | cut -f1))"
 
@@ -161,10 +194,27 @@ cp -r "$stage/usr" "$deb/usr"
 # Installed-Size is in kibibytes, and dpkg-deb will not work it out for you.
 installed_kib="$(du -ks "$deb/usr" | cut -f1)"
 
-# Depends is deliberately short. The graphics libraries are dlopened rather
-# than linked, so requiring them would refuse to install on a machine that
-# could run the editor perfectly well over X11 without Wayland, or vice versa.
-# They are Recommends, which apt installs by default and lets you decline.
+# The glibc version is read out of the binary rather than written down. It is
+# built on whatever image the workflow uses -- ubuntu-22.04, so glibc 2.35 --
+# and a Rust binary from there needs symbols versioned GLIBC_2.34. Declaring
+# something older lets `dpkg -i` succeed on, say, Debian 11, and the editor
+# then dies at exec with "version `GLIBC_2.34' not found": a package that
+# installs and cannot run, which is worse than one that refuses.
+#
+# The dynamic symbol table survives stripping -- it has to, for linking -- so
+# this still works on the stripped copy.
+glibc="$(objdump -T "$staged" \
+    | grep -oE 'GLIBC_[0-9]+\.[0-9]+' \
+    | sed 's/GLIBC_//' \
+    | sort -V \
+    | tail -1)"
+[ -n "$glibc" ] || { echo "could not read the glibc requirement from the binary" >&2; exit 1; }
+echo "Needs glibc >= $glibc"
+
+# Beyond libc, Depends is deliberately short. The graphics libraries are
+# dlopened rather than linked, so requiring them would refuse to install on a
+# machine that could run the editor perfectly well -- over X11 with no Wayland,
+# say. They are Recommends, which apt takes by default and lets you decline.
 cat > "$deb/DEBIAN/control" <<CONTROL
 Package: aitch
 Version: $version
@@ -173,7 +223,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: TokenGoblin <noreply@github.com>
 Installed-Size: $installed_kib
-Depends: libc6 (>= 2.31)
+Depends: libc6 (>= $glibc)
 Recommends: libvulkan1, mesa-vulkan-drivers, libxkbcommon0, fonts-dejavu-core
 Suggests: libwayland-client0, libx11-6
 Homepage: https://github.com/TokenGoblin/Aitch
@@ -252,15 +302,28 @@ exec "$HERE/usr/bin/aitch" "$@"
 APPRUN
 chmod 755 "$appdir/AppRun"
 
+# Pinned to a tagged release and checked, rather than pulled from the rolling
+# `continuous` tag. appimagetool's own runtime is concatenated into every
+# AppImage this builds, so whatever that URL serves on the day ends up inside
+# a published artifact: an upstream change, or a compromise, would ride into a
+# signed-off release with nothing in the pipeline noticing.
+#
+# Nor is a locally installed appimagetool used if there happens to be one. The
+# point is that the same input produces the same output wherever this runs.
+appimagetool_version=1.9.0
+appimagetool_sha256=46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1
+
 tool="$work/appimagetool"
-if command -v appimagetool >/dev/null 2>&1; then
-    tool="$(command -v appimagetool)"
-else
-    echo "Fetching appimagetool"
-    curl -fsSL -o "$tool" \
-        https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-    chmod 755 "$tool"
+echo "Fetching appimagetool $appimagetool_version"
+curl -fsSL -o "$tool" \
+    "https://github.com/AppImage/appimagetool/releases/download/$appimagetool_version/appimagetool-x86_64.AppImage"
+if ! echo "$appimagetool_sha256  $tool" | sha256sum -c - >/dev/null 2>&1; then
+    echo "appimagetool does not match the checksum recorded in this script:" >&2
+    echo "    got      $(sha256sum "$tool" | cut -d' ' -f1)" >&2
+    echo "    expected $appimagetool_sha256" >&2
+    exit 1
 fi
+chmod 755 "$tool"
 
 # --appimage-extract-and-run because a CI runner has no FUSE, and appimagetool
 # is itself an AppImage: without this it fails with a mount error that reads

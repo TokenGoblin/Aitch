@@ -47,10 +47,18 @@ jobs:
       - name: Work out the version
         id: version
         shell: pwsh
+        # Through the environment, not interpolated into the script. The Linux
+        # job had the same shape and the same hazard: a tag name may legally
+        # contain a quote, which would close the string and run as PowerShell
+        # in a job holding `contents: write`.
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          $version = '${{ inputs.version }}'
-          if (-not $version -and '${{ github.ref_type }}' -eq 'tag') {
-            $version = '${{ github.ref_name }}' -replace '^v', ''
+          $version = $env:INPUT_VERSION
+          if (-not $version -and $env:REF_TYPE -eq 'tag') {
+            $version = $env:REF_NAME -replace '^v', ''
           }
           if (-not $version) {
             $cargo = Get-Content Cargo.toml -Raw
@@ -135,7 +143,9 @@ jobs:
             target/dist/*.zip
           generate_release_notes: true
           body: |
-            Windows build of Aitch ${{ steps.version.outputs.version }}.
+            Aitch ${{ steps.version.outputs.version }}.
+
+            ### Windows
 
             **`.msi`** installs per-user into `%LOCALAPPDATA%\Programs\Aitch` —
             no administrator prompt — and puts `aitch` on your PATH.
@@ -146,11 +156,33 @@ jobs:
             and its sessions and recovery files in `%LOCALAPPDATA%\aitch`, the
             same as the installed copy.
 
+            ### Linux
+
+            **`.AppImage`** is the one to reach for: one file, no install, no
+            root. Make it executable and run it.
+
+            **`.deb`** for Debian and Ubuntu, with a desktop entry and icons.
+            It asks for a glibc at least as new as the one it was built
+            against, and the package says which — so it refuses rather than
+            installing and then failing to start.
+
+            **`.tar.gz`** is the same binary with nothing to install.
+
+            Built against an old glibc deliberately, so it runs on more than
+            the distribution that built it. The graphics libraries are loaded
+            at run time rather than linked against, so the package requires
+            none of them.
+
             New to it? [docs/guide.md](https://github.com/TokenGoblin/Aitch/blob/main/docs/guide.md)
             is the guide.
 
   linux-packages:
     name: Linux packages
+    # The Windows job creates the release and writes its notes; this one only
+    # adds files to it. Without the ordering both try to create the same
+    # release at once, and whichever loses either fails or quietly drops its
+    # body -- which is how Linux assets would end up under Windows-only notes.
+    needs: windows-installer
     # Deliberately not ubuntu-latest. A binary built against an old glibc runs
     # on newer systems and the reverse is not true, and PLAN.md Phase 8 asks
     # for the oldest glibc worth supporting -- a static build is not possible
@@ -179,10 +211,18 @@ jobs:
 
       - name: Work out the version
         id: version
+        # Through the environment, never interpolated into the script. A tag
+        # name may legally contain a quote and `inputs.version` is whatever
+        # somebody typed; either would close the string and run as shell, in a
+        # job that holds `contents: write`.
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          version='${{ inputs.version }}'
-          if [ -z "$version" ] && [ '${{ github.ref_type }}' = tag ]; then
-            version="$(echo '${{ github.ref_name }}' | sed 's/^v//')"
+          version="$INPUT_VERSION"
+          if [ -z "$version" ] && [ "$REF_TYPE" = tag ]; then
+            version="${REF_NAME#v}"
           fi
           if [ -z "$version" ]; then
             version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
@@ -243,6 +283,8 @@ jobs:
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
+          # No body here on purpose: the Windows job writes the notes and this
+          # one adds files to the release it already created.
           files: |
             target/dist/*.tar.gz
             target/dist/*.deb
