@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metadata. Flathub requires it, GNOME Software and KDE Discover
+  read it, and appstreamcli validates it. The Flatpak build runs that
+  validation, so a mistake here fails the build rather than producing a
+  package that installs and then shows up nameless in a software centre.
+-->
+<component type="desktop-application">
+  <id>io.github.tokengoblin.Aitch</id>
+
+  <name>Aitch</name>
+  <summary>A text editor with nano's interaction model</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <developer id="io.github.tokengoblin">
+    <name>TokenGoblin</name>
+  </developer>
+
+  <description>
+    <p>
+      Aitch is a graphical text editor that behaves the way nano does and
+      opens folders the way an IDE does. It is modeless: you open it and you
+      type. There is no command mode and no hidden state.
+    </p>
+    <p>
+      The footer is the interface. Two rows of shortcuts sit at the bottom of
+      the window, always visible, and they change with what you are doing —
+      they are generated from the active keymap rather than written out by
+      hand, so they stay true even in a keymap you wrote yourself. Prompts
+      happen on a line above them. There are no modal dialogs and no floating
+      windows.
+    </p>
+    <p>Beyond that:</p>
+    <ul>
+      <li>Open a folder as a project, with a file tree, fuzzy file open and search across every file in it</li>
+      <li>Syntax highlighting for thirteen languages, parsed off the drawing thread so a keystroke costs the same however large the file</li>
+      <li>Files keep the encoding and line endings they arrived with</li>
+      <li>Unsaved work survives a crash and is offered back when the file is next opened</li>
+      <li>Two keymaps ship, nano and a modern one, and writing your own is the same format</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.github.tokengoblin.Aitch.desktop</launchable>
+
+  <url type="homepage">https://github.com/TokenGoblin/Aitch</url>
+  <url type="bugtracker">https://github.com/TokenGoblin/Aitch/issues</url>
+  <url type="help">https://github.com/TokenGoblin/Aitch/blob/main/docs/guide.md</url>
+  <url type="vcs-browser">https://github.com/TokenGoblin/Aitch</url>
+
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/TokenGoblin/Aitch/main/docs/images/editor.png</image>
+      <caption>Editing Rust, with the two-row shortcut footer beneath</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/TokenGoblin/Aitch/main/docs/images/tree.png</image>
+      <caption>The file tree open, and the footer showing the tree's own keys</caption>
+    </screenshot>
+  </screenshots>
+
+  <categories>
+    <category>Utility</category>
+    <category>TextEditor</category>
+    <category>Development</category>
+  </categories>
+
+  <keywords>
+    <keyword>editor</keyword>
+    <keyword>text</keyword>
+    <keyword>nano</keyword>
+    <keyword>code</keyword>
+  </keywords>
+
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+
+  <recommends>
+    <display_length compare="ge">768</display_length>
+  </recommends>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.1.2" date="2026-09-09">
+      <description>
+        <p>
+          Fixes a crash on windows wider than 2048 pixels, two ways unsaved
+          work could be lost without being asked about, and a launch that
+          opened an empty console beside the editor.
+        </p>
+      </description>
+      <url>https://github.com/TokenGoblin/Aitch/releases/tag/v0.1.2</url>
+    </release>
+  </releases>
+</component>

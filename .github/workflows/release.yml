@@ -134,55 +134,8 @@ jobs:
             target/dist/*.zip
           if-no-files-found: error
 
-      - name: Publish the release
-        if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            target/dist/*.msi
-            target/dist/*.zip
-          generate_release_notes: true
-          body: |
-            Aitch ${{ steps.version.outputs.version }}.
-
-            ### Windows
-
-            **`.msi`** installs per-user into `%LOCALAPPDATA%\Programs\Aitch` —
-            no administrator prompt — and puts `aitch` on your PATH.
-
-            **`.zip`** is the same binary with nothing to install: unpack it
-            and run `aitch.exe`. It is not on your PATH and there is no Start
-            menu entry, and it still keeps its settings in `%APPDATA%\aitch`
-            and its sessions and recovery files in `%LOCALAPPDATA%\aitch`, the
-            same as the installed copy.
-
-            ### Linux
-
-            **`.AppImage`** is the one to reach for: one file, no install, no
-            root. Make it executable and run it.
-
-            **`.deb`** for Debian and Ubuntu, with a desktop entry and icons.
-            It asks for a glibc at least as new as the one it was built
-            against, and the package says which — so it refuses rather than
-            installing and then failing to start.
-
-            **`.tar.gz`** is the same binary with nothing to install.
-
-            Built against an old glibc deliberately, so it runs on more than
-            the distribution that built it. The graphics libraries are loaded
-            at run time rather than linked against, so the package requires
-            none of them.
-
-            New to it? [docs/guide.md](https://github.com/TokenGoblin/Aitch/blob/main/docs/guide.md)
-            is the guide.
-
   linux-packages:
     name: Linux packages
-    # The Windows job creates the release and writes its notes; this one only
-    # adds files to it. Without the ordering both try to create the same
-    # release at once, and whichever loses either fails or quietly drops its
-    # body -- which is how Linux assets would end up under Windows-only notes.
-    needs: windows-installer
     # Deliberately not ubuntu-latest. A binary built against an old glibc runs
     # on newer systems and the reverse is not true, and PLAN.md Phase 8 asks
     # for the oldest glibc worth supporting -- a static build is not possible
@@ -279,13 +232,70 @@ jobs:
             target/dist/*.AppImage
           if-no-files-found: error
 
-      - name: Publish the release
-        if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+  publish:
+    name: Publish
+    # One job publishes, so there is nothing to race over. Both builders used
+    # to call the release action themselves: they created the same release at
+    # once, and only one of them had any notes, so the Linux artifacts could
+    # land under text describing a Windows-only build. Ordering them with
+    # `needs:` fixed that and cost the parallelism -- a release took as long as
+    # both builds end to end. This keeps both.
+    needs: [windows-installer, linux-packages]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+
+    steps:
+      # Whatever the two builders uploaded, which is exactly what was checked.
+      # Nothing is rebuilt here: a release should ship the artifact that
+      # passed, not a fresh one that has not.
+      - uses: actions/download-artifact@v4
         with:
-          # No body here on purpose: the Windows job writes the notes and this
-          # one adds files to the release it already created.
-          files: |
-            target/dist/*.tar.gz
-            target/dist/*.deb
-            target/dist/*.AppImage
+          path: artifacts
+
+      - name: Work out the version
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: List what is being published
+        run: find artifacts -type f | sort
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          body: |
+            Aitch ${{ steps.version.outputs.version }}.
+
+            ### Windows
+
+            **`.msi`** installs per-user into `%LOCALAPPDATA%\Programs\Aitch` —
+            no administrator prompt — and puts `aitch` on your PATH.
+
+            **`.zip`** is the same binary with nothing to install: unpack it
+            and run `aitch.exe`. It is not on your PATH and there is no Start
+            menu entry, and it still keeps its settings in `%APPDATA%\aitch`
+            and its sessions and recovery files in `%LOCALAPPDATA%\aitch`, the
+            same as the installed copy.
+
+            ### Linux
+
+            **`.AppImage`** is the one to reach for: one file, no install, no
+            root. Make it executable and run it.
+
+            **`.deb`** for Debian and Ubuntu, with a desktop entry and icons.
+            It asks for a glibc at least as new as the one it was built
+            against, and the package says which — so it refuses rather than
+            installing and then failing to start.
+
+            **`.tar.gz`** is the same binary with nothing to install.
+
+            Built against an old glibc deliberately, so it runs on more than
+            the distribution that built it. The graphics libraries are loaded
+            at run time rather than linked against, so the package requires
+            none of them.
+
+            New to it? [docs/guide.md](https://github.com/TokenGoblin/Aitch/blob/main/docs/guide.md)
+            is the guide.

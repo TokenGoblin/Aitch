@@ -1,0 +1,102 @@
+# Flatpak manifest.
+#
+#     packaging/linux/flatpak/generate-cargo-sources.py > cargo-sources.json
+#     flatpak-builder --user --install --force-clean build \
+#         packaging/linux/flatpak/io.github.tokengoblin.Aitch.yml
+#
+# cargo-sources.json is generated rather than committed: it is a few thousand
+# lines that would need regenerating on every dependency change, and a stale
+# copy is worse than none. See the generator's own comments for why the build
+# needs it at all -- in short, a Flathub build has no network, so every crate
+# has to arrive as a declared, checksummed source.
+
+app-id: io.github.tokengoblin.Aitch
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: aitch
+
+finish-args:
+  # Wayland where there is one, X11 where there is not. Both, because a
+  # session may be either and the editor dlopens whichever it finds.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+
+  # The GPU. Everything is drawn through wgpu, so without this there is no
+  # window worth having.
+  - --device=dri
+
+  # A text editor that can only see its own sandbox is not a text editor.
+  # This is the permission Flathub will ask about, and the honest answer is
+  # that opening arbitrary files and folders is the whole purpose.
+  - --filesystem=host
+
+  # Deliberately absent: --share=network. Nothing here talks to a network,
+  # and PLAN.md rules out the features that would -- no extensions, no LSP,
+  # no telemetry.
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    # Where the generated sources put the vendored crates and the config that
+    # points cargo at them.
+    CARGO_HOME: /run/build/aitch/cargo
+
+modules:
+  - name: aitch
+    buildsystem: simple
+
+    build-commands:
+      # --offline is belt and braces: the sandbox has no network anyway, but
+      # this turns "tried to reach crates.io" into a clear error rather than a
+      # timeout.
+      - cargo --offline build --release -p aitch
+
+      - install -Dm755 target/release/aitch /app/bin/aitch
+
+      # Everything a Flatpak installs has to be named for the application ID,
+      # icons included, so the desktop file's Icon= is rewritten to match.
+      - |
+        install -Dm644 packaging/linux/aitch.desktop \
+            /app/share/applications/io.github.tokengoblin.Aitch.desktop
+        sed -i 's/^Icon=aitch$/Icon=io.github.tokengoblin.Aitch/' \
+            /app/share/applications/io.github.tokengoblin.Aitch.desktop
+        desktop-file-validate /app/share/applications/io.github.tokengoblin.Aitch.desktop
+
+      # The icon is generated from the editor's own theme, the same drawing
+      # Windows and the .deb get. See docs/screenshots.md.
+      - |
+        for size in 16 24 32 48 64 128 256; do
+            cargo --offline run --release -p aitch-ui --example make_icon -- \
+                "icon-$size.png"
+            install -Dm644 "icon-$size.png" \
+                "/app/share/icons/hicolor/${size}x${size}/apps/io.github.tokengoblin.Aitch.png"
+        done
+
+      # Validated during the build, so a mistake in it fails here rather than
+      # producing a package that shows up nameless in a software centre.
+      - |
+        install -Dm644 packaging/linux/flatpak/io.github.tokengoblin.Aitch.metainfo.xml \
+            /app/share/metainfo/io.github.tokengoblin.Aitch.metainfo.xml
+        appstreamcli validate --no-net \
+            /app/share/metainfo/io.github.tokengoblin.Aitch.metainfo.xml
+
+      - install -Dm644 README.md /app/share/doc/aitch/README.md
+      - install -Dm644 LICENSE /app/share/doc/aitch/LICENSE
+      - install -Dm644 docs/guide.md /app/share/doc/aitch/guide.md
+      - install -Dm644 docs/config.md /app/share/doc/aitch/config.md
+      - install -Dm644 docs/keymap.md /app/share/doc/aitch/keymap.md
+      # The binary contains MPL-2.0 code as well as MIT, and this is where
+      # that is written down.
+      - install -Dm644 docs/third-party.md /app/share/doc/aitch/third-party.md
+
+    sources:
+      - type: dir
+        path: ../../..
+
+      # Every crate, as a checksummed archive. Generated -- see the top of
+      # this file.
+      - cargo-sources.json

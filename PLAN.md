@@ -194,20 +194,25 @@ Nano has no equivalent, so this is invention. Keep it keyboard-first and keep it
   screenshot is the whole pitch.
 - ✅ An application icon, generated from the dark theme by the `make_icon`
   example, on the Start menu shortcut and in Add/Remove Programs.
-- ❌ **Linux: not done.** No AppImage, no `.deb`, no Flatpak manifest. The
-  editor builds, tests and runs on Linux — CI does all three on every push,
-  against lavapipe — and `cargo install --path crates/aitch` works. Only the
-  packaging is missing.
+- ✅ Linux: an AppImage, a `.deb` and a tarball, built by
+  `packaging/linux/build.sh` on `ubuntu-22.04` and each checked by running the
+  binary out of it — the tarball unpacked elsewhere, the AppImage run, the
+  `.deb` installed, run, validated for its desktop entry and icon, then
+  removed and checked gone.
 
-  Two things to know before picking this up. First, **"static-linked" is not
-  available**: winit, wgpu and cosmic-text `dlopen` their X11, Wayland and
-  Vulkan libraries at run time, and a statically linked musl binary cannot
-  `dlopen` at all. The achievable version is a dynamic build against the
-  oldest glibc worth supporting — build on the oldest runner image rather than
-  the newest — which is what the AppImage convention assumes anyway.
-  Second, an AppImage and a `.desktop` entry both need an icon, and there is
-  one now: `packaging/windows/aitch.ico`, or re-run `make_icon` for PNGs at
-  any size.
+  **"Static-linked" turned out not to be available**, as suspected: winit,
+  wgpu and cosmic-text `dlopen` their X11, Wayland and Vulkan libraries, and a
+  statically linked musl binary cannot `dlopen` at all. The dynamic build
+  against an old glibc is what AppImage assumes anyway. Measured rather than
+  guessed: `ldd` shows the binary needs `libgcc_s`, `libm` and `libc` and
+  nothing else, which is why the `.deb` requires only `libc6` — at the version
+  read out of the binary, not one written down — and lists the graphics
+  libraries as `Recommends`.
+
+- ✅ A Flatpak manifest, in `packaging/linux/flatpak/`, with AppStream
+  metadata and a generator that turns `Cargo.lock` into the offline source
+  list a Flathub build needs. **Not yet built**: it needs a Linux machine with
+  `flatpak-builder`, which nothing here has.
 
 ---
 
