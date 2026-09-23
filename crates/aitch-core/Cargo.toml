@@ -1,0 +1,29 @@
+[package]
+name = "aitch-core"
+description = "Editor core for aitch. No GUI dependencies, ever."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# Distributed as a built binary, not on crates.io: the crates depend on each
+# other by path with no version, which crates.io does not accept. Saying so
+# lets `cargo deny` treat a wildcard version as the supply-chain hazard it is
+# everywhere else.
+publish = false
+
+# NON-NEGOTIABLE: no winit, no wgpu, no cosmic-text in this file. See CLAUDE.md.
+# ALSO NON-NEGOTIABLE as of PLAN-ZERO-DEP.md: no tree-sitter or grammar
+# crates (Phase 5), no grep-matcher/grep-regex/grep-searcher/ignore/ropey
+# (Phase 6), and no serde/toml (Phase 7) — see `matcher.rs`/`regex.rs`/
+# `walk.rs`/`syntax.rs`/`toml.rs` for their hand-written replacements. This
+# crate has zero runtime dependencies.
+[dependencies]
+
+# The bench target (benches/buffer.rs) has its own `fn main()` — a
+# hand-written std::time::Instant harness, no criterion, no dev-dependencies
+# at all. `harness = false` tells cargo to run that `fn main()` directly
+# instead of wrapping the target in the built-in libtest bench harness.
+[[bench]]
+name = "buffer"
+harness = false

@@ -1,0 +1,184 @@
+name: Release
+
+# Tag a version to cut a release:
+#     git tag v0.1.0 && git push origin v0.1.0
+#
+# Or run it by hand from the Actions tab to get an installer to test with,
+# without publishing anything.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (defaults to Cargo.toml)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    name: Windows installer
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The tests are the gate. An installer nobody can trust is worse than
+      # no installer, and this is the last point at which that is cheap.
+      - name: Test
+        run: cargo test --workspace --release
+
+      # The UI extension is a separate package, and wix only reports its
+      # absence once it is already building (error WIX0144).
+      - name: Install WiX
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add --global WixToolset.UI.wixext/5.0.2
+
+      - name: Work out the version
+        id: version
+        shell: pwsh
+        # Through the environment, not interpolated into the script. The Linux
+        # job had the same shape and the same hazard: a tag name may legally
+        # contain a quote, which would close the string and run as PowerShell
+        # in a job holding `contents: write`.
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $version = $env:INPUT_VERSION
+          if (-not $version -and $env:REF_TYPE -eq 'tag') {
+            $version = $env:REF_NAME -replace '^v', ''
+          }
+          if (-not $version) {
+            $cargo = Get-Content Cargo.toml -Raw
+            if ($cargo -match '(?m)^version\s*=\s*"([^"]+)"') { $version = $Matches[1] }
+          }
+          if (-not $version) { throw 'Could not work out a version' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Building $version"
+
+      # build.ps1 remaps source paths out of the binary and refuses to package
+      # one that still carries the build machine's home directory.
+      - name: Build the installer and the portable zip
+        shell: pwsh
+        run: ./packaging/windows/build.ps1 -Version ${{ steps.version.outputs.version }}
+
+      # The zip is the artifact with nothing between it and the user, so it is
+      # worth proving it actually runs rather than merely that it exists. This
+      # unpacks it somewhere else entirely and runs the binary from there.
+      - name: Check the portable zip runs
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $zip = "target/dist/aitch-$version-x86_64-windows.zip"
+          if (-not (Test-Path $zip)) { throw "no zip at $zip" }
+
+          $unpacked = Join-Path $env:RUNNER_TEMP 'portable'
+          Expand-Archive -Path $zip -DestinationPath $unpacked
+          $exe = Join-Path $unpacked "aitch-$version-x86_64-windows/aitch.exe"
+
+          # Start-Process -Wait, not `& $exe`: aitch is a GUI-subsystem
+          # program, and a shell does not wait for one of those. `&` returned
+          # immediately, closed the pipe it was reading, and the editor was
+          # still on its way to writing the version into it.
+          $out = Join-Path $env:RUNNER_TEMP 'version.txt'
+          $run = Start-Process $exe -ArgumentList '--version' -Wait -PassThru `
+                                    -NoNewWindow -RedirectStandardOutput $out
+          if ($run.ExitCode -ne 0) { throw "--version exited $($run.ExitCode)" }
+
+          $reported = (Get-Content $out -Raw).Trim()
+          if ($reported -ne "aitch $version") {
+            throw "the zip's binary reports '$reported', not 'aitch $version'"
+          }
+          Write-Host "Portable zip runs and reports $reported"
+
+      - name: Check the installer opens
+        shell: pwsh
+        run: |
+          $msi = "target/dist/aitch-${{ steps.version.outputs.version }}-x86_64.msi"
+          if (-not (Test-Path $msi)) { throw "no installer at $msi" }
+
+          # A readable Property table is the cheapest proof the file is a real
+          # MSI rather than something that merely has the extension.
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $db = $installer.GetType().InvokeMember(
+            'OpenDatabase', 'InvokeMethod', $null, $installer, @((Resolve-Path $msi).Path, 0))
+          $view = $db.GetType().InvokeMember(
+            'OpenView', 'InvokeMethod', $null, $db,
+            @("SELECT Value FROM Property WHERE Property = 'Manufacturer'"))
+          $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
+          $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+          $manufacturer = $record.GetType().InvokeMember(
+            'StringData', 'GetProperty', $null, $record, @(1))
+          if ($manufacturer -ne 'TokenGoblin') {
+            throw "Manufacturer is '$manufacturer'"
+          }
+          Write-Host "MSI is valid, published by $manufacturer"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: aitch-${{ steps.version.outputs.version }}-windows-x86_64
+          path: |
+            target/dist/*.msi
+            target/dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    # Kept as its own job rather than folded into the builder: the builder
+    # proves the artifact, this publishes it, and a failure to publish does
+    # not cost a rebuild. It is also where a second platform would slot back
+    # in behind `needs:` without touching the build.
+    needs: [windows-installer]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+
+    steps:
+      # Whatever the two builders uploaded, which is exactly what was checked.
+      # Nothing is rebuilt here: a release should ship the artifact that
+      # passed, not a fresh one that has not.
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Work out the version
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: List what is being published
+        run: find artifacts -type f | sort
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          body: |
+            Aitch ${{ steps.version.outputs.version }}.
+
+            ### Windows
+
+            **`.msi`** installs per-user into `%LOCALAPPDATA%\Programs\Aitch` —
+            no administrator prompt — and puts `aitch` on your PATH.
+
+            **`.zip`** is the same binary with nothing to install: unpack it
+            and run `aitch.exe`. It is not on your PATH and there is no Start
+            menu entry, and it still keeps its settings in `%APPDATA%\aitch`
+            and its sessions and recovery files in `%LOCALAPPDATA%\aitch`, the
+            same as the installed copy.
+
+            New to it? [docs/guide.md](https://github.com/TokenGoblin/Aitch/blob/main/docs/guide.md)
+            is the guide.

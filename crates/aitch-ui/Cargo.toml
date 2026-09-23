@@ -1,0 +1,21 @@
+[package]
+name = "aitch-ui"
+description = "Window, GPU surface and rendering for aitch."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# Distributed as a built binary, not on crates.io: the crates depend on each
+# other by path with no version, which crates.io does not accept. Saying so
+# lets `cargo deny` treat a wildcard version as the supply-chain hazard it is
+# everywhere else.
+publish = false
+
+[dependencies]
+aitch-core = { workspace = true }
+# `arboard` is gone: PLAN-ZERO-DEP.md Phase 2 Track A replaced it with a
+# hand-written Win32 clipboard (`platform/win32/clipboard.rs`), not yet wired
+# into `app.rs` -- there is still no keyboard/mouse input to trigger a copy
+# or paste from until Phase 3.
+

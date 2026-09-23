@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # The CI gate for the zero-dependency rewrite (PLAN-ZERO-DEP.md S1):
+      # fails the build if Cargo.lock's package count has grown past the
+      # tracked budget in dependency-budget.txt.
+      - name: Check dependency budget
+        shell: pwsh
+        run: .\scripts\check-dependency-budget.ps1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build
+        run: cargo build --workspace --release
+
+      # Opening a window needs a display; CI has none by default. This checks
+      # the binary links and starts. The window itself is a manual check
+      # until it is worth standing up a headless display for it.
+      - name: Smoke test the binary
+        run: cargo run --release -p aitch -- --version
+
+      # The benches are budgets from PLAN.md §6, not a gate yet: failing on a
+      # regression needs a stored baseline. Keep them compiling meanwhile.
+      - name: Build benches
+        run: cargo bench --workspace --no-run
